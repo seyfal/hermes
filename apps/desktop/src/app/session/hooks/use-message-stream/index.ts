@@ -725,7 +725,7 @@ export function useMessageStream({
           )
 
           if (coveredByHistory) {
-            return state
+            return streamId ? { ...state, streamId: null } : state
           }
 
           const prevSameText = nextMessages.findLast(
