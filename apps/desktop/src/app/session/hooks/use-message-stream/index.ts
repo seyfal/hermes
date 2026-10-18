@@ -714,6 +714,7 @@ export function useMessageStream({
             (message, index) =>
               index > lastUserIndex &&
               message.role === 'assistant' &&
+              message.durableComplete === false &&
               !message.hidden &&
               message.parts.some(
                 part =>
