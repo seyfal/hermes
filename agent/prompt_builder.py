@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 from collections import OrderedDict
@@ -570,12 +571,20 @@ STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
 # Text after the "[" that opens one of Hermes' own control frames (the steer marker above, the compaction
 # handoff and its fallbacks, runtime/system notes, agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
 # agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
-# (hosted rooms) relabel these so a reply cannot reproduce the exact trusted shape. Keep the regex literal in
-# apps/desktop/src/plugins/hermes-bots/group-round-prompt.ts byte-equivalent to this list.
+# (hosted rooms) relabel these with relabel_control_frames so a reply cannot reproduce the exact trusted shape.
+# Keep the regex literal in apps/desktop/src/plugins/hermes-bots/group-round-prompt.ts byte-equivalent to this list.
 CONTROL_FRAME_OPENERS = (
     "/?OUT-OF-BAND USER MESSAGE", "CONTEXT COMPACTION", "CONTEXT SUMMARY]", "PRIOR CONTEXT", "Runtime note:",
     "System note:", "System:", "SYSTEM]", "IMPORTANT:", "Planning state preserved", "ASYNC DELEGATION",
 )
+_CONTROL_FRAME_OPENER_RE = re.compile(
+    r"\[(?=" + "|".join(opener.replace("]", r"\]") for opener in CONTROL_FRAME_OPENERS) + ")", re.IGNORECASE)
+
+
+def relabel_control_frames(text: str, label: str) -> str:
+    """``text`` with every control-frame opener relabelled visibly as ``[<label> ...``: the words stay,
+    the exact trusted shape does not."""
+    return _CONTROL_FRAME_OPENER_RE.sub(f"[{label} ", text)
 
 
 def format_steer_marker(steer_text: str) -> str:
