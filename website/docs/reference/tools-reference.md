@@ -191,14 +191,14 @@ Enabled for sessions whose source is the desktop app, whichever backend it's con
 
 ## `peer_messaging` toolset
 
-Inspired by Muse Code's inter-session messaging. Discovery and sending are off by default — enable via `hermes tools` → Peer Messaging. Receiving is independent of that selection: an enabled sender can message another session in the same Hermes home, and the recipient checks its mailbox on its next activity even without these tools enabled. Idle sessions are not automatically started.
+Inspired by Muse Code's inter-session messaging. Discovery and sending are off by default — enable via `hermes tools` → Peer Messaging. Receiving is independent of that selection: an enabled sender can message another live session in the same Hermes home, and the recipient reads its mailbox before each model request, even without these tools enabled. Idle sessions are not automatically started; a message waits for the recipient's next turn. Ended sessions are refused.
 
-Messages retain the sending session's attribution and use the existing user-role steering transport. Peer-written text does not grant new human permission or override the user's instructions. Delivery is best-effort: a successful send means queued, not read or completed. The mailbox is consumed into memory before transcript persistence, so a receiver crash in that interval can lose the message. This primitive does not provide acknowledgment, retry, or exactly-once execution.
+A received message arrives as its own transcript row, framed as a message from another Hermes session and not from the user: after the recipient's latest tool results, where a mid-turn `/steer` goes, or right after the user's message when its next turn starts. It names the sending session, carries no user authority and never starts a turn by itself; control-frame markers quoted inside it (such as the `/steer` marker) are relabelled, so a peer cannot pose as the user. A successful send means queued, not read or completed. A message file is deleted only after its row is stored in the recipient's session database, so a receiver crash leaves the message stored or still queued (a crash between those two steps can deliver it twice). This primitive does not provide acknowledgment to the sender or exactly-once delivery.
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `peer_sessions` | List the user's other recently active Hermes sessions on this machine (session id, title, source, cwd, last activity). Local-only discovery over the session store. | — |
-| `peer_send` | Send a message to another of the user's Hermes sessions. Delivered via a local filesystem mailbox under the Hermes home (never the network); the peer receives it mid-turn over the steer channel if running, else at the start of its next turn. | — |
+| `peer_send` | Send a message to another of the user's Hermes sessions. Delivered via a local filesystem mailbox under the Hermes home (never the network); the peer receives it before its next model request if running, else at the start of its next turn. | — |
 
 ## `skills` toolset
 

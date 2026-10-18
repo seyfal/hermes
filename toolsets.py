@@ -133,10 +133,10 @@ TOOLSETS = {
     "peer_messaging": _ts(
         "Inter-session messaging (inspired by Muse Code): discover the user's other "
         "live Hermes sessions on this machine and send them messages. Local-only "
-        "mailboxes under the Hermes home; delivery rides the mid-turn steer channel. "
+        "mailboxes under the Hermes home; a recipient reads its mailbox before each model "
+        "request, mid-turn included, even without these tools enabled. "
         "Discovery and sending are off by default; enable in `hermes tools` → Peer Messaging. "
-        "Recipients receive on their next activity even without these tools enabled. "
-        "Delivery is best-effort and does not start idle sessions.",
+        "Idle sessions are not started.",
         ["peer_sessions", "peer_send"],
     ),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
