@@ -25,7 +25,7 @@ from agent.context_compressor import (
     _tool_content_has_images,
 )
 from agent.model_metadata import estimate_messages_tokens_rough
-from agent.prompt_builder import steer_user_row
+from agent.prompt_builder import peer_message_row, steer_user_row
 from agent.turn_context import compression_made_progress
 
 
@@ -245,8 +245,10 @@ def _image_result(call_id: str) -> dict:
     }
 
 
-@pytest.mark.parametrize("steers", [0, 1, 2], ids=["round_last", "steer_after_round", "two_steers_after_round"])
-def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
+@pytest.mark.parametrize("after_round", [(), (steer_user_row,), (steer_user_row, steer_user_row),
+                                         (steer_user_row, peer_message_row)],
+                         ids=["round_last", "steer_after_round", "two_steers_after_round", "peer_after_steer"])
+def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(after_round):
     """Regression: compaction after a tool round stubbed the output the model had just asked for.
 
     Lean mode's 10K tail budget puts pass 4's soft ceiling at 15K tokens. Long user messages (no pass
@@ -255,7 +257,8 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
     rounds still give way to the budget. A /steer sent during the tools lands as a user row after the
     round before preflight compaction runs; the round is still unread then. Two steers can land in one
     iteration: one drained when the tool batch ends, another drained before the next request and
-    inserted right after the newest tool result, so the round is followed by two steer rows.
+    inserted right after the newest tool result, so the round is followed by two steer rows. A peer
+    session's message is appended after them in the same iteration.
     """
     ctx = 272_000
     with patch("agent.context_compressor.get_model_context_length", return_value=ctx):
@@ -285,8 +288,8 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
     ]
     pending = {m["tool_call_id"]: m["content"] for m in msgs[-2:]}
     previous = msgs[-6]
-    for text in ["Also flag any node above 90% cpu.", "And list the racks they sit in."][:steers]:
-        msgs.append(steer_user_row(text))
+    for row, text in zip(after_round, ["Also flag any node above 90% cpu.", "And list the racks they sit in."]):
+        msgs.append(row(text))
     assert previous["tool_call_id"] == "old_12"
 
     out = c.compress(list(msgs), current_tokens=estimate_messages_tokens_rough(msgs))

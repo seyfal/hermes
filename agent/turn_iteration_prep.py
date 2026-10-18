@@ -318,10 +318,11 @@ def _append_peer_message_row(agent: Any, messages: Any, row: dict, turn_user_idx
     already delivered after them) and store it; True once stored. The row is only ever appended,
     so every earlier row stays as sent and cached; a transcript ending in anything else (retry
     scaffolding, a continuation) leaves the message queued for the next request."""
-    from agent.prompt_builder import STEER_DISPLAY_KIND
+    from agent.prompt_builder import PEER_MESSAGE_DISPLAY_KIND, STEER_DISPLAY_KIND
 
     end = len(messages)
-    while end - 1 > turn_user_idx and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
+    while end - 1 > turn_user_idx and messages[end - 1].get("display_kind") in (
+            STEER_DISPLAY_KIND, PEER_MESSAGE_DISPLAY_KIND):
         end -= 1
     if not (end - 1 > turn_user_idx and messages[end - 1].get("role") == "tool"):
         return False

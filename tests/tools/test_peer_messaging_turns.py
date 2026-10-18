@@ -145,3 +145,50 @@ def test_row_that_cannot_be_stored_is_not_sent_and_stays_queued(home):
 
     assert PEER_BODY not in _sent_text(payloads)
     assert len(_queued()) == 1
+
+
+def test_peer_message_is_framed_as_a_peer_not_as_the_user(home):
+    """A busy recipient gets the message mid-turn as its own row that claims no user authority: not the
+    /steer frame (the system prompt gives that frame the user's full authority) and not a row any "is
+    this human input" predicate or renderer treats as the user's words."""
+    from agent.context_compressor import ContextCompressor, is_user_originated_turn
+    from agent.prompt_builder import STEER_DISPLAY_KIND, STEER_MARKER_OPEN
+
+    payloads: list = []
+    agent = _recipient(home.db, [SEND_DURING_TOOL, "done"], payloads)
+    agent.run_conversation("run the probe")
+
+    assert PEER_BODY in _sent_text(payloads[1:])
+    row = next(m for m in home.db.get_messages_as_conversation(RECIPIENT) if PEER_BODY in str(m.get("content")))
+    assert STEER_MARKER_OPEN not in row["content"]
+    assert row.get("display_kind") not in (None, STEER_DISPLAY_KIND)
+    assert not is_user_originated_turn(row)
+    assert not ContextCompressor._is_actionable_user_turn(row)
+
+
+def test_peer_rows_are_never_merged_with_the_users_rows():
+    """A peer row next to the user's own row (the next prompt after a run that ended on the peer row)
+    keeps its own row: merging would store the user's words under the peer's frame or the reverse."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+    from agent.prompt_builder import peer_message_row
+
+    peer = peer_message_row(f"From Hermes session {SENDER}:\n{PEER_BODY}")
+    for messages in ([dict(peer), {"role": "user", "content": "next question"}],
+                     [{"role": "user", "content": "next question"}, dict(peer)]):
+        before = [dict(m) for m in messages]
+        repair_message_sequence(None, messages)
+        assert messages == before
+
+
+def test_compaction_never_quotes_a_peer_message_as_the_users_words():
+    """The compaction summary carries the user's own messages verbatim; a peer's text must not be
+    among them, or after compaction it reads as something the user said."""
+    from agent.context_compressor import _build_verbatim_user_section
+    from agent.prompt_builder import peer_message_row
+
+    section = _build_verbatim_user_section([
+        {"role": "user", "content": "run the probe"},
+        peer_message_row(f"From Hermes session {SENDER}:\n{PEER_BODY}"),
+    ])
+    assert "run the probe" in section
+    assert PEER_BODY not in section
