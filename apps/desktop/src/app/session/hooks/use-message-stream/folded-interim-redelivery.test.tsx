@@ -32,7 +32,16 @@ it.each([1, 9])('does not append replayed commentary already carried by a %i-rou
   const hydrated = toChatMessages(rows)
 
   const states = new Map<string, ClientSessionState>([
-    [sid, { ...createClientSessionState(), messages: hydrated, busy: true, turnLive: true, streamId: count === 9 ? 'orphaned-stream' : null }]
+    [
+      sid,
+      {
+        ...createClientSessionState(),
+        messages: hydrated,
+        busy: true,
+        turnLive: true,
+        streamId: count === 9 ? 'orphaned-stream' : null
+      }
+    ]
   ])
 
   const stream = renderMessageStream(sid, { states })
