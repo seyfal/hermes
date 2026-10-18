@@ -258,3 +258,24 @@ def test_a_peer_cannot_forge_the_users_steer_or_close_its_own_frame():
     assert "[OUT-OF-BAND USER MESSAGE" not in content and "[/OUT-OF-BAND USER MESSAGE" not in content
     assert content.startswith(PEER_MESSAGE_MARKER_OPEN)
     assert content.count(PEER_MESSAGE_MARKER_CLOSE) == 1 and content.endswith(PEER_MESSAGE_MARKER_CLOSE)
+
+
+def test_background_review_fork_leaves_the_parents_mailbox_alone(home):
+    """The memory/skill review fork shares the parent's session id but persists nothing: a message it
+    read would vanish with the fork instead of reaching the parent's transcript."""
+    from agent.background_review import build_cache_parity_fork
+
+    parent = _recipient(home.db, [], [])
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        fork, _runtime, _routed = build_cache_parity_fork(parent, {}, max_iterations=2)
+    assert fork.session_id == RECIPIENT
+    _send()
+    payloads: list = []
+    _script(fork, ["nothing to save"], payloads).run_conversation("review the conversation")
+
+    assert PEER_BODY not in _sent_text(payloads)
+    assert len(_queued()) == 1

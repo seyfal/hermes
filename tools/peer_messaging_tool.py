@@ -244,9 +244,10 @@ def deliver_peer_messages(agent: Any, store: Callable[[dict[str, Any]], bool]) -
     when the transcript has no slot for it yet. Message files are deleted only after True, so
     a crash leaves each message stored or still queued (a crash between the two can deliver
     it twice, never zero times). Exits on one ``is_dir()`` when nothing was ever sent to this
-    session."""
+    session. An agent that persists nothing (the background-review and /btw forks share their
+    parent's session id) never reads it: the row would vanish with that agent."""
     session_id = getattr(agent, "session_id", None)
-    if not session_id:
+    if not session_id or getattr(agent, "_persist_disabled", False):
         return False
     try:
         # The agent's store pins the recipient home even in a multiplexed process.
