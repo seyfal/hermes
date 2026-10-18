@@ -118,3 +118,22 @@ def test_queued_messages_are_private_to_the_user(peer_env):
     inbox = pm._inbox_dir("target-session-1")
     assert stat.S_IMODE(inbox.stat().st_mode) == 0o700
     assert [stat.S_IMODE(p.stat().st_mode) for p in inbox.iterdir()] == [0o600]
+
+
+def test_ended_session_is_refused_without_creating_a_mailbox(peer_env):
+    """An ended session reads no mailbox (discovery already hides it); a send must say so, not report
+    a message queued that nobody may ever read."""
+    import tools.peer_messaging_tool as pm
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=peer_env / "state.db")
+    db.end_session("target-session-1", "user_exit")
+    db.close()
+    result = _dispatch(
+        "peer_send",
+        {"target_session_id": "target-session-1", "message": "anyone there?"},
+        session_id="sender-session",
+    )
+    assert result.get("success") is not True
+    assert "peer_sessions" in json.dumps(result)
+    assert not pm._inbox_dir("target-session-1").exists()

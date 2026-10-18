@@ -94,6 +94,10 @@ def peer_send(target_session_id: str, message: str, *,
         return tool_error(
             f"No session '{target}' found. Use peer_sessions to list the user's "
             "other live sessions and copy an exact session id.")
+    if row.get("ended_at"):
+        return tool_error(
+            f"Session '{target}' has ended and reads no messages unless it is resumed. Use "
+            "peer_sessions to list the user's live sessions.")
 
     inbox = _inbox_dir(target)
     try:
