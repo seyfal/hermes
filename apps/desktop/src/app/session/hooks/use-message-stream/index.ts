@@ -707,6 +707,26 @@ export function useMessageStream({
           const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
           const normalizedText = authoritativeText.replace(/\s+/g, ' ').trim()
 
+          // Hydration folds several persisted commentary rows into one bubble.
+          // A replayed seal names one source text part, not the whole fold; do
+          // not append it again or replace the fold's other text and tool parts.
+          const coveredByHistory = nextMessages.some(
+            (message, index) =>
+              index > lastUserIndex &&
+              message.role === 'assistant' &&
+              !message.hidden &&
+              message.parts.some(
+                part =>
+                  part.type === 'text' &&
+                  part.sourceRowId !== undefined &&
+                  part.text.replace(/\s+/g, ' ').trim() === normalizedText
+              )
+          )
+
+          if (coveredByHistory) {
+            return state
+          }
+
           const prevSameText = nextMessages.findLast(
             (message, index) =>
               index > lastUserIndex &&
