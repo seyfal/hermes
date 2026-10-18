@@ -67,6 +67,7 @@ it.each(['new text', 'new text before tool', 'new reasoning', 'new turn', 'diffe
 
     if (scenario === 'new text' || scenario === 'new text before tool') {
       await send('message.delta', { text: comment })
+
       if (scenario === 'new text before tool') {
         await send('tool.start', { name: 'read_file', tool_id: 'second-read', args: {} })
       }
