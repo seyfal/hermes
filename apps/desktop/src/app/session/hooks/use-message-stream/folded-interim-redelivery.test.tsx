@@ -32,7 +32,7 @@ it.each([1, 9])('does not append replayed commentary already carried by a %i-rou
   const hydrated = toChatMessages(rows)
 
   const states = new Map<string, ClientSessionState>([
-    [sid, { ...createClientSessionState(), messages: hydrated, busy: true, turnLive: true }]
+    [sid, { ...createClientSessionState(), messages: hydrated, busy: true, turnLive: true, streamId: count === 9 ? 'orphaned-stream' : null }]
   ])
 
   const stream = renderMessageStream(sid, { states })
@@ -46,13 +46,15 @@ it.each([1, 9])('does not append replayed commentary already carried by a %i-rou
 
   const afterReplay = stream.state().messages as ChatMessage[]
   expect(afterReplay).toEqual(hydrated)
+  expect(stream.state().streamId).toBeNull()
 
   await send('message.delta', { text: 'A newly observed result.' })
   await send('message.interim', { text: 'A newly observed result.', already_streamed: true })
+  await send('message.complete', { text: 'Finished inspecting fixtures.' })
 
   const text = stream.state().messages.map(chatMessageText).join('\n\n')
 
-  for (const comment of [...comments, 'A newly observed result.']) {
+  for (const comment of [...comments, 'A newly observed result.', 'Finished inspecting fixtures.']) {
     expect(text.split(comment)).toHaveLength(2)
   }
 
