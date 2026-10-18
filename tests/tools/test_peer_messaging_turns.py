@@ -116,7 +116,57 @@ def test_peer_message_survives_a_turn_without_tool_calls(home):
     result = agent.run_conversation("hello")
 
     assert PEER_BODY not in str(result.get("pending_steer") or "")
-    assert PEER_BODY in _sent_text(payloads) or _queued()
+    assert PEER_BODY in _sent_text(payloads) and not _queued()
+
+
+def test_resumed_idle_session_gets_the_message_after_the_new_question(home):
+    """A message queued while the session was idle is read at the start of its next turn. It lands after
+    that turn's question, never inside the previous turn (between its tool result and its final answer):
+    the request then sends what the store keeps, in the same order, and the earlier turns' cached prefix
+    is untouched."""
+    _recipient(home.db, [QUIET_TOOL, "first answer"], []).run_conversation("first question")
+    history = home.db.get_messages_as_conversation(RECIPIENT)
+    _send()
+    payloads: list = []
+    _recipient(home.db, ["second answer"], payloads).run_conversation(
+        "next question", conversation_history=history)
+
+    def order(rows):
+        """(row, offset) of each needle: the merged wire row keeps the stored order inside one row."""
+        text = [str(row.get("content")) for row in rows]
+        return [next((i, t.index(needle)) for i, t in enumerate(text) if needle in t)
+                for needle in ("first answer", "next question", PEER_BODY)]
+
+    assert order(payloads[0]) == sorted(order(payloads[0]))
+    stored = home.db.get_messages_as_conversation(RECIPIENT)
+    assert order(stored) == sorted(order(stored))
+    assert stored[-1]["content"] == "second answer"
+    # The question's row stays the user's own words; the peer text keeps its own typed row.
+    assert [PEER_BODY in str(row["content"]) for row in stored if row["role"] == "user"] == [False, False, True]
+    assert not _queued()
+
+
+def test_message_never_lands_after_retry_scaffolding(home):
+    """A message that arrives while the first request runs, when that request comes back thinking-only,
+    must not go after the reasoning prefill the next request continues from: the prefill only works as
+    the last row, and it is scaffolding the store never keeps. The message waits for the next slot."""
+    from tests.agent.test_run_agent import _mock_response
+
+    payloads: list = []
+    agent = _recipient(home.db, [], payloads)
+    replies = [_mock_response(content="", reasoning="thinking about it"), _mock_response(content="answer")]
+
+    def model_call(api_kwargs):
+        payloads.append([dict(m) for m in api_kwargs["messages"]])
+        if len(payloads) == 1:
+            _send()
+        return replies.pop(0)
+
+    agent._interruptible_api_call = model_call
+    agent.run_conversation("hello")
+
+    assert len(payloads) == 2 and PEER_BODY not in _sent_text(payloads)
+    assert len(_queued()) == 1
 
 
 def test_message_is_stored_before_it_leaves_the_mailbox(home):

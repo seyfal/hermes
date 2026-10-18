@@ -314,17 +314,21 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
 
 
 def _append_peer_message_row(agent: Any, messages: Any, row: dict, turn_user_idx: int) -> bool:
-    """Append a peer-message row when the transcript ends in this turn's tool results (and rows
-    already delivered after them) and store it; True once stored. The row is only ever appended,
-    so every earlier row stays as sent and cached; a transcript ending in anything else (retry
-    scaffolding, a continuation) leaves the message queued for the next request."""
+    """Append a peer-message row when the transcript ends in this turn's question or tool results
+    (and rows already delivered after them) and store it; True once stored. The row is only ever
+    appended, so every earlier row stays as sent and cached; a transcript ending in anything else
+    (retry scaffolding, a continuation) leaves the message queued for the next request. Right after
+    the question the request carries two user rows, which the wire copy merges
+    (``drop_thinking_only_and_merge_users``) while both stay stored as written."""
     from agent.prompt_builder import PEER_MESSAGE_DISPLAY_KIND, STEER_DISPLAY_KIND
 
     end = len(messages)
     while end - 1 > turn_user_idx and messages[end - 1].get("display_kind") in (
             STEER_DISPLAY_KIND, PEER_MESSAGE_DISPLAY_KIND):
         end -= 1
-    if not (end - 1 > turn_user_idx and messages[end - 1].get("role") == "tool"):
+    last = end - 1
+    at_question = turn_user_idx >= 0 and last == turn_user_idx
+    if not (at_question or (last > turn_user_idx and messages[last].get("role") == "tool")):
         return False
     messages.append(row)
     if agent._flush_messages_to_session_db(messages) is False:

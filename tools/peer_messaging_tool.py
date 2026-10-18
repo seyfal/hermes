@@ -6,8 +6,9 @@ socket between processes owned by you, so nothing crosses the network. The agent
 the sending: it discovers peers and writes the message itself through two built-in
 tools." Hermes adapts the design to filesystem mailboxes under ``$HERMES_HOME`` (works
 on Windows too, atomic via ``os.replace``) and delivers received messages as a
-standalone user-role row after the recipient's tool results, the slot a mid-turn
-/steer takes (``agent/turn_iteration_prep.py``), framed as a peer's message
+standalone user-role row after the recipient's tool results (the slot a mid-turn
+/steer takes) or after the question that starts its next turn
+(``agent/turn_iteration_prep.py``), framed as a peer's message
 (``agent.prompt_builder.peer_message_row``), never as the user's steer.
 
 Trust boundary: the mailbox directory lives inside ``$HERMES_HOME`` (0700 on POSIX),
@@ -123,8 +124,9 @@ def peer_send(target_session_id: str, message: str, *,
         "success": True,
         "target_session_id": target,
         "target_title": row.get("title") or None,
-        "note": ("Message queued. The target reads it at its first model request after a tool "
-                 "call. Idle sessions are not started. Queued does not mean read or completed."),
+        "note": ("Message queued. The target reads it before its next model request: mid-turn "
+                 "if it is running, else when its next turn starts (idle sessions are not "
+                 "started). Queued does not mean read or completed."),
     })
 
 
