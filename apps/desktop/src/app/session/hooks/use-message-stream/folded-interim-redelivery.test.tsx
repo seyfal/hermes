@@ -61,7 +61,7 @@ it.each([1, 9])('does not append replayed commentary already carried by a %i-rou
   ).toHaveLength(count)
 })
 
-it.each(['new prompt', 'live response', 'hidden history', 'shared prefix'] as const)(
+it.each(['new prompt', 'live response', 'hidden history', 'shared prefix', 'completed turn'] as const)(
   'keeps new commentary with a %s instead of consuming another occurrence',
   async scenario => {
     const sid = 'folded-interim-boundaries'
@@ -77,6 +77,10 @@ it.each(['new prompt', 'live response', 'hidden history', 'shared prefix'] as co
       },
       { id: 3, role: 'tool', content: 'fixture', tool_call_id: 'read-1' }
     ]
+
+    if (scenario === 'completed turn') {
+      rows.push({ id: 4, role: 'assistant', content: 'Previous final answer.' })
+    }
 
     const hydrated = toChatMessages(rows)
 
@@ -96,6 +100,10 @@ it.each(['new prompt', 'live response', 'hidden history', 'shared prefix'] as co
       act(() => stream.handleEvent({ type, payload, session_id: sid }))
 
     const text = scenario === 'shared prefix' ? `${comment} More detail.` : comment
+
+    if (scenario === 'completed turn') {
+      await send('message.start', {})
+    }
 
     if (scenario === 'live response') {
       await send('message.delta', { text })
