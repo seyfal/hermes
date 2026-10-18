@@ -1,7 +1,7 @@
 """Outer-iteration bookkeeping for the conversation turn loop, in call order:
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
 ``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
-standalone user row after the newest tool result, run-budget wrap-up notice, tool_call
+standalone user row after this turn's newest tool result, run-budget wrap-up notice, tool_call
 argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
@@ -178,7 +178,8 @@ def prepare_iteration(
     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
-        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+        _inject_steer_after_newest_tool_result(
+            agent, messages, _pre_api_steer, _turn_user_idx(messages, current_turn_user_idx, user_message))
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
@@ -281,10 +282,22 @@ def _previous_tool_round(messages: Any) -> list:
     return []
 
 
-def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
-    for _si in range(len(messages) - 1, -1, -1):
+def _turn_user_idx(messages: Any, current_turn_user_idx: Any, user_message: Any) -> int:
+    """Index of this turn's user row, re-derived when mid-turn compaction left the recorded one
+    stale; -1 when it cannot be told (no ``user_message``)."""
+    if _anchors_current_turn(messages, current_turn_user_idx, user_message):
+        return current_turn_user_idx
+    if user_message is None:
+        return -1
+    from agent.turn_context import reanchor_current_turn_user_idx
+    return reanchor_current_turn_user_idx(messages, user_message)
+
+
+def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str, turn_user_idx: int) -> None:
+    """Append the steer marker as a standalone user row after this turn's newest tool message;
+    with none yet, put the text back so the post-tool-execution drain delivers it later. A tool
+    message before ``turn_user_idx`` belongs to an earlier turn, which was sent (and cached) as stored."""
+    for _si in range(len(messages) - 1, turn_user_idx, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
             from agent.prompt_builder import steer_user_row
