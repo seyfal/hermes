@@ -1,14 +1,13 @@
 """Peer session messaging (tools/peer_messaging_tool.py) — invariant tests.
 
 1. End-to-end mailbox contract: a message sent to a known session via the registry
-   handler is drained by ``inject_peer_messages`` into the target agent's steer
-   channel with peer provenance declared, and the inbox file is consumed.
+   handler is delivered by ``deliver_peer_messages`` as one transcript row with peer
+   provenance declared, and the inbox file is consumed once the row is stored.
 2. Trust/scope contract: sending to an unknown session id fails without creating a
    mailbox, and a session with no inbox drains nothing.
 """
 
 import json
-import time
 
 import pytest
 
@@ -27,12 +26,14 @@ def peer_env(tmp_path, monkeypatch):
 
 
 class _StubAgent:
+    """A recipient whose transcript stores every row it is handed (``stored``)."""
+
     def __init__(self, session_id):
         self.session_id = session_id
-        self.steers = []
+        self.stored = []
 
-    def steer(self, text):
-        self.steers.append(text)
+    def store(self, row):
+        self.stored.append(row)
         return True
 
 
@@ -41,7 +42,7 @@ def _dispatch(name, args, session_id):
     return json.loads(registry.dispatch(name, args, session_id=session_id))
 
 
-def test_peer_send_delivers_via_steer_and_consumes_inbox(peer_env):
+def test_peer_send_delivers_one_attributed_row_and_consumes_inbox(peer_env):
     import tools.peer_messaging_tool as pm
 
     result = _dispatch(
@@ -55,17 +56,15 @@ def test_peer_send_delivers_via_steer_and_consumes_inbox(peer_env):
     assert [p for p in inbox.iterdir() if p.suffix == ".json"], "message file must be queued"
 
     agent = _StubAgent("target-session-1")
-    assert pm.inject_peer_messages(agent) is True
-    delivered = "\n".join(agent.steers)
+    assert pm.deliver_peer_messages(agent, agent.store) is True
+    delivered = "\n".join(row["content"] for row in agent.stored)
     # Provenance: attributed to the sender session, not the user.
     assert "sender-session" in delivered
     assert "heads up: schema changed" in delivered
     assert "user authority" in delivered  # explicit non-user provenance framing
-    # Consumed: nothing left to deliver, and the rate limit halts an immediate re-poll.
-    assert not [p for p in inbox.iterdir() if p.suffix == ".json"]
-    agent2 = _StubAgent("target-session-1")
-    agent2._peer_inbox_last_drain_mono = time.monotonic()
-    assert pm.inject_peer_messages(agent2) is False
+    # Consumed: nothing left to deliver.
+    assert not list(inbox.glob("*.json"))
+    assert pm.deliver_peer_messages(_StubAgent("target-session-1"), agent.store) is False
 
 
 def test_unknown_target_rejected_and_no_inbox_is_a_noop(peer_env):
@@ -79,7 +78,19 @@ def test_unknown_target_rejected_and_no_inbox_is_a_noop(peer_env):
     assert result.get("success") is False or "error" in result
     assert not pm._inbox_dir("no-such-session").exists(), "failed send must not create a mailbox"
 
-    # A session nobody messaged drains nothing and never steers.
+    # A session nobody messaged delivers nothing.
     agent = _StubAgent("never-messaged")
-    assert pm.inject_peer_messages(agent) is False
-    assert agent.steers == []
+    assert pm.deliver_peer_messages(agent, agent.store) is False
+    assert agent.stored == []
+
+
+def test_message_stays_queued_until_its_row_is_stored(peer_env):
+    """A transcript with no slot for the row yet (or a store that failed) must leave the message
+    in the mailbox: it is the only durable copy."""
+    import tools.peer_messaging_tool as pm
+
+    _dispatch("peer_send", {"target_session_id": "target-session-1", "message": "not yet"},
+              session_id="sender-session")
+    offered = []
+    assert pm.deliver_peer_messages(_StubAgent("target-session-1"), lambda row: offered.append(row) or False) is False
+    assert offered and len(list(pm._inbox_dir("target-session-1").glob("*.json"))) == 1

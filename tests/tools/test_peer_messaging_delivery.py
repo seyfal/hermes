@@ -1,4 +1,4 @@
-"""Real activity/steer/persistence contracts for the continuation of #106423."""
+"""Real delivery/persistence contracts for the continuation of #106423."""
 
 import json
 import threading
@@ -26,9 +26,10 @@ def _send(target, body, sender):
     ))
 
 
-def test_peer_activity_delivers_user_row_with_provenance_and_persists(tmp_path, monkeypatch):
+def test_peer_delivery_stores_user_row_with_provenance(tmp_path, monkeypatch):
     """The real receive path works without recipient send tools and preserves history."""
     import tools.peer_messaging_tool as pm
+    from agent.turn_iteration_prep import _append_peer_message_row
 
     home = tmp_path / "home"
     home.mkdir()
@@ -51,21 +52,25 @@ def test_peer_activity_delivers_user_row_with_provenance_and_persists(tmp_path, 
             {"role": "tool", "tool_call_id": "probe", "content": "done"},
         ]
         original_prefix = json.dumps(messages)
-        agent._touch_activity("tool batch finished")
-        agent._apply_pending_steer_to_tool_results(messages, 1)
-        assert json.dumps(messages[:-1]) == original_prefix
+
+        def store(row):
+            return _append_peer_message_row(agent, messages, row, -1)
+
+        assert pm.deliver_peer_messages(agent, store)
+        # Storing stamps bookkeeping keys on the rows; what was sent stays byte-identical.
+        before = json.loads(original_prefix)
+        assert [{key: row[key] for key in old} for row, old in zip(messages, before)] == before
+        assert len(messages) == len(before) + 1
         row = messages[-1]
         assert row["role"] == "user"
         assert "sender" in row["content"] and "The schema is ready" in row["content"]
         assert "peer" in row["content"].lower()
-        assert agent._flush_messages_to_session_db(messages) is True
         stored = db.get_messages("recipient")
         assert stored[-1]["role"] == row["role"]
         assert stored[-1]["content"] == row["content"]
         assert not list(pm._inbox_dir("recipient").glob("*.json"))
         count = len(stored)
-        agent._touch_activity("next activity")
-        agent._apply_pending_steer_to_tool_results(messages, 1)
+        assert not pm.deliver_peer_messages(agent, store)
         assert agent._flush_messages_to_session_db(messages) is True
         assert len(db.get_messages("recipient")) == count
     finally:
@@ -87,10 +92,11 @@ def test_recipient_store_pins_mailbox_when_ambient_profile_changes(tmp_path, mon
             db.create_session("recipient", source="cli")
             assert _send("recipient", body, "sender")["success"]
         agent = _recipient(databases[0], "recipient")
-        assert pm.inject_peer_messages(agent) is True
-        pending = agent._drain_pending_steer()
-        assert "first profile payload" in pending
-        assert "second profile payload" not in pending
+        stored = []
+        assert pm.deliver_peer_messages(agent, lambda row: stored.append(row) or True) is True
+        delivered = "\n".join(row["content"] for row in stored)
+        assert "first profile payload" in delivered
+        assert "second profile payload" not in delivered
         assert list(pm._inbox_dir("recipient").glob("*.json"))
     finally:
         for db in databases:

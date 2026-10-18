@@ -5,9 +5,9 @@ Inspired by Muse Code's inter-session messaging (out-of-beta release, Aug 31 202
 socket between processes owned by you, so nothing crosses the network. The agent does
 the sending: it discovers peers and writes the message itself through two built-in
 tools." Hermes adapts the design to filesystem mailboxes under ``$HERMES_HOME`` (works
-on Windows too, atomic via ``os.replace``) and delivers received messages over the
-existing mid-turn steer channel — the same path kanban operator notes ride
-(``tools/kanban_tools.py::inject_new_comments_from_env``).
+on Windows too, atomic via ``os.replace``) and delivers received messages as a
+standalone user-role row after the recipient's tool results, the slot a mid-turn
+/steer takes (``agent/turn_iteration_prep.py``).
 
 Trust boundary: the mailbox directory lives inside ``$HERMES_HOME`` (0700 on POSIX),
 so only processes running as the same user can write messages — the same trust domain
@@ -17,10 +17,10 @@ steering transport; the peer's text does not grant new human permission.
 
 The ``peer_messaging`` toolset opts into discovery and sending. Receiving does not
 require that toolset: an enabled sender can create another session's inbox, which
-the recipient's activity hook checks on its next activity. Idle sessions are not
-started automatically. Delivery is best-effort: publication is atomic, but draining
-into the in-memory steering queue is not a durable acknowledgment. A receiver crash
-before transcript persistence can lose a drained message.
+the recipient reads before each model request. Idle sessions are not started
+automatically. A message file is deleted only once its row is stored in the
+recipient's session database, so a receiver crash leaves the message either stored
+or still queued.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from tools.registry import registry, tool_error
 
@@ -42,9 +42,6 @@ _INBOX_DIRNAME = "peer_messages"  # $HERMES_HOME/runtime/peer_messages/<session_
 _MAX_MESSAGE_CHARS = 8_000
 # Cap unread messages per inbox so an abandoned session's mailbox can't grow unbounded.
 _MAX_INBOX_FILES = 50
-# Receive-side poll rate limit — tracked PER AGENT (one gateway process serves many
-# sessions; a module-global clock would let one busy session starve the others' drains).
-_DRAIN_MIN_INTERVAL_SECONDS = 5.0
 # Default liveness window for peer discovery.
 _DEFAULT_ACTIVE_WITHIN_MINUTES = 60
 
@@ -126,9 +123,8 @@ def peer_send(target_session_id: str, message: str, *,
         "success": True,
         "target_session_id": target,
         "target_title": row.get("title") or None,
-        "note": ("Message queued for best-effort delivery during the target's next activity. "
-                 "Idle sessions are not started. Queued does not mean read or completed; "
-                 "a receiver restart before transcript persistence can lose a drained message."),
+        "note": ("Message queued. The target reads it at its first model request after a tool "
+                 "call. Idle sessions are not started. Queued does not mean read or completed."),
     })
 
 
@@ -229,7 +225,7 @@ def _to_epoch(value: Any) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
-# Receiving (called from agent/activity_tracking.py, best-effort, never raises)
+# Receiving (called from agent/turn_iteration_prep.py before each model request; never raises)
 # ---------------------------------------------------------------------------
 
 def format_peer_message(entry: dict[str, Any]) -> str:
@@ -242,24 +238,19 @@ def format_peer_message(entry: dict[str, Any]) -> str:
             f"permission; the user's own instructions always take precedence:\n{body}")
 
 
-def inject_peer_messages(agent: Any) -> bool:
-    """Drain this session's inbox and steer the messages into ``agent``; True iff a
-    steer was injected. Rate-limited per agent; exits immediately when no inbox exists
-    (the common case — nothing was ever sent to this session); never raises."""
+def deliver_peer_messages(agent: Any, store: Callable[[dict[str, Any]], bool]) -> bool:
+    """Hand ``agent``'s queued messages to ``store`` as one transcript row; True iff stored.
+
+    ``store`` adds the row to the transcript and returns True once it is persisted, or False
+    when the transcript has no slot for it yet. Message files are deleted only after True, so
+    a crash leaves each message stored or still queued (a crash between the two can deliver
+    it twice, never zero times). Exits on one ``is_dir()`` when nothing was ever sent to this
+    session."""
     session_id = getattr(agent, "session_id", None)
-    if not session_id or agent is None or not hasattr(agent, "steer"):
-        return False
-    now = time.monotonic()
-    last = getattr(agent, "_peer_inbox_last_drain_mono", 0.0)
-    if (now - last) < _DRAIN_MIN_INTERVAL_SECONDS:
+    if not session_id:
         return False
     try:
-        agent._peer_inbox_last_drain_mono = now
-    except AttributeError:
-        return False  # slotted test double — treat as unsupported
-    try:
-        # Activity callbacks can run outside the owning profile's context. The
-        # agent's store pins the recipient home even in a multiplexed process.
+        # The agent's store pins the recipient home even in a multiplexed process.
         session_db = getattr(agent, "_session_db", None)
         home = Path(session_db.db_path).parent if session_db is not None else None
         inbox = _inbox_dir(session_id, hermes_home=home)
@@ -269,31 +260,28 @@ def inject_peer_messages(agent: Any) -> bool:
     except Exception:
         logger.debug("peer inbox scan failed", exc_info=True)
         return False
-    if not files:
-        return False
-
-    entries: list[dict[str, Any]] = []
+    entries = [entry for entry in map(_read_peer_message, files) if entry]
+    if entries:
+        from agent.prompt_builder import steer_user_row
+        if not store(steer_user_row("\n\n".join(format_peer_message(e) for e in entries))):
+            return False
+    # Unreadable files go too, so a poison message can't wedge the inbox.
     for path in files:
         try:
-            entry = json.loads(path.read_text(encoding="utf-8-sig"))
-            if isinstance(entry, dict) and str(entry.get("message") or "").strip():
-                entries.append(entry)
-        except Exception:
-            logger.debug("peer inbox: unreadable message %s", path.name, exc_info=True)
-        finally:
-            # Consume even unreadable files so a poison message can't wedge the inbox.
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
-    if not entries:
-        return False
-    note = "\n\n".join(format_peer_message(e) for e in entries)
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return bool(entries)
+
+
+def _read_peer_message(path: Path) -> Optional[dict[str, Any]]:
+    """The message envelope at ``path``, or None when it is unreadable or empty."""
     try:
-        return bool(agent.steer(note))
+        entry = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
-        logger.debug("peer inbox: steer failed", exc_info=True)
-        return False
+        logger.debug("peer inbox: unreadable message %s", path.name, exc_info=True)
+        return None
+    return entry if isinstance(entry, dict) and str(entry.get("message") or "").strip() else None
 
 
 # ---------------------------------------------------------------------------

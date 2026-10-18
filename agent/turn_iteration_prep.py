@@ -2,7 +2,8 @@
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
 ``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
 standalone user row after this turn's newest tool result, run-budget wrap-up notice, tool_call
-argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair),
+argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair,
+queued peer-session messages),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
 imports ``agent.conversation_loop`` at module level (cycle)."""
@@ -253,6 +254,10 @@ def prepare_iteration(
             current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
         )
         current_turn_user_idx = _reanchored_idx
+    # Last, so a message a peer sent while the previous request ran goes out with this one.
+    from tools.peer_messaging_tool import deliver_peer_messages
+    deliver_peer_messages(agent, lambda row: _append_peer_message_row(
+        agent, messages, row, current_turn_user_idx if isinstance(current_turn_user_idx, int) else -1))
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
         current_turn_user_idx=current_turn_user_idx,
@@ -306,6 +311,25 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
             return
     from agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)
+
+
+def _append_peer_message_row(agent: Any, messages: Any, row: dict, turn_user_idx: int) -> bool:
+    """Append a peer-message row when the transcript ends in this turn's tool results (and rows
+    already delivered after them) and store it; True once stored. The row is only ever appended,
+    so every earlier row stays as sent and cached; a transcript ending in anything else (retry
+    scaffolding, a continuation) leaves the message queued for the next request."""
+    from agent.prompt_builder import STEER_DISPLAY_KIND
+
+    end = len(messages)
+    while end - 1 > turn_user_idx and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
+        end -= 1
+    if not (end - 1 > turn_user_idx and messages[end - 1].get("role") == "tool"):
+        return False
+    messages.append(row)
+    if agent._flush_messages_to_session_db(messages) is False:
+        messages.pop()  # not stored: the mailbox keeps the message for the next request
+        return False
+    return True
 
 
 @dataclass
