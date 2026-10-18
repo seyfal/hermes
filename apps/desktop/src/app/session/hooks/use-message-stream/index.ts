@@ -49,6 +49,7 @@ import {
 } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
+import { isToolOnlyInterimReplay } from './interim-replay'
 import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import {
@@ -681,6 +682,10 @@ export function useMessageStream({
         }
 
         let nextMessages = state.messages
+
+        if (isToolOnlyInterimReplay(nextMessages, streamId, authoritativeText, state.interimBoundaryPending)) {
+          return state
+        }
 
         if (streamId && nextMessages.some(m => m.id === streamId)) {
           // Seal the streaming bubble in place, marked interim so it renders
