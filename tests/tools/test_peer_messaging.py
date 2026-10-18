@@ -94,3 +94,27 @@ def test_message_stays_queued_until_its_row_is_stored(peer_env):
     offered = []
     assert pm.deliver_peer_messages(_StubAgent("target-session-1"), lambda row: offered.append(row) or False) is False
     assert offered and len(list(pm._inbox_dir("target-session-1").glob("*.json"))) == 1
+
+
+@pytest.mark.platforms("posix")
+def test_queued_messages_are_private_to_the_user(peer_env):
+    """Only the owning user may list or read queued messages: a 0700 inbox holding 0600 files, whatever
+    the process umask or the mode of the Hermes home."""
+    import os
+    import stat
+
+    import tools.peer_messaging_tool as pm
+
+    old_umask = os.umask(0o022)
+    try:
+        result = _dispatch(
+            "peer_send",
+            {"target_session_id": "target-session-1", "message": "private note"},
+            session_id="sender-session",
+        )
+    finally:
+        os.umask(old_umask)
+    assert result.get("success") is True
+    inbox = pm._inbox_dir("target-session-1")
+    assert stat.S_IMODE(inbox.stat().st_mode) == 0o700
+    assert [stat.S_IMODE(p.stat().st_mode) for p in inbox.iterdir()] == [0o600]

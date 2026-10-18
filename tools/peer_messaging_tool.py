@@ -5,13 +5,13 @@ Inspired by Muse Code's inter-session messaging (out-of-beta release, Aug 31 202
 socket between processes owned by you, so nothing crosses the network. The agent does
 the sending: it discovers peers and writes the message itself through two built-in
 tools." Hermes adapts the design to filesystem mailboxes under ``$HERMES_HOME`` (works
-on Windows too, atomic via ``os.replace``) and delivers received messages as a
+on Windows too, published with an atomic replace) and delivers received messages as a
 standalone user-role row after the recipient's tool results (the slot a mid-turn
 /steer takes) or after the question that starts its next turn
 (``agent/turn_iteration_prep.py``), framed as a peer's message
 (``agent.prompt_builder.peer_message_row``), never as the user's steer.
 
-Trust boundary: the mailbox directory lives inside ``$HERMES_HOME`` (0700 on POSIX),
+Trust boundary: the mailbox lives inside ``$HERMES_HOME`` (0700 inboxes, 0600 files on POSIX),
 so only processes running as the same user can write messages — the same trust domain
 as the SQLite session store itself. Nothing crosses the network. The delivered row
 identifies the sending peer and states that it carries no user authority.
@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import time
 import uuid
@@ -36,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from tools.registry import registry, tool_error
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ def check_peer_messaging_requirements() -> bool:
 
 def peer_send(target_session_id: str, message: str, *,
               from_session_id: Optional[str] = None) -> str:
-    """Write one message file into the target session's inbox (atomic rename)."""
+    """Write one message file into the target session's inbox (atomic replace)."""
     target = str(target_session_id or "").strip()
     body = str(message or "").strip()
     if not target:
@@ -111,12 +111,10 @@ def peer_send(target_session_id: str, message: str, *,
             "message": body,
             "sent_at": time.time(),
         }
-        # Sortable name (delivery order) + atomic publish so the reader never sees a
-        # partial file. os.replace is atomic on POSIX and Windows.
+        # Sortable name (delivery order). The bot relay mailbox's writer: the reader never sees a
+        # partial file, and the message is 0600 from creation and fsynced before it is published.
         name = f"{time.time_ns():020d}_{uuid.uuid4().hex[:8]}"
-        tmp = inbox / f".{name}.tmp"
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, inbox / f"{name}.json")
+        atomic_json_write(inbox / f"{name}.json", payload, indent=None, mode=0o600)
     except OSError as e:
         return tool_error(f"Failed to write peer message: {e}")
 
