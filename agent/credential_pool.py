@@ -1721,7 +1721,8 @@ class CredentialPool(CredentialPoolRefreshMixin, CredentialPoolAdminMixin, Crede
                 # Backstop for pool-owned sources (hermes_pkce, manual:dashboard_pkce):
                 # the winner may have persisted between our pre-check and our POST.
                 synced = self._sync_entry_from_pool_store(entry)
-                if synced.refresh_token != entry.refresh_token:
+                from agent.credential_pool_refresh import _can_adopt_rotation
+                if _can_adopt_rotation(self, entry, synced):
                     logger.debug("Anthropic OAuth refresh failed but pool store has newer tokens — adopting")
                     return self._adopt(synced, **_MARK_OK)
             from agent.anthropic_credentials import is_terminal_anthropic_refresh_error
