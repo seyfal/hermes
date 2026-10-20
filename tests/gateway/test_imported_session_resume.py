@@ -1,0 +1,100 @@
+"""Foreign transcripts mount read-only and adopt only when continued (#142091)."""
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from gateway.session_contract import SessionRef
+
+
+async def _imported_connection(tmp_path, monkeypatch, source='claude-code'):
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    config = {'platform_toolsets': {'cli': []}, 'model': {'default': 'demo-model', 'provider': 'custom'}}
+    monkeypatch.setattr(run, '_load_gateway_config', lambda *_path: config)
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    origin = {'tool': source, 'path': str(tmp_path / 'abc-123.jsonl'), 'foreign_session_id': 'abc-123'}
+    sid = db.import_foreign_history(origin, [{'role': 'user', 'content': 'Please fix the flaky test.'},
+                                            {'role': 'assistant', 'content': 'Looking.'}],
+                                   title='Fix the flaky test', cwd=None, profile='default')['session_id']
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='owner')
+    connection = AuthorityConnection(authority, object(), {
+        'provider': 'local', 'user_id': 'native', 'profile_id': str(tmp_path), 'instance_id': 'owner'})
+    return connection, SessionRef(str(tmp_path), sid), origin
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source', ['claude-code', 'codex-cli'])
+async def test_an_imported_mount_is_adopted_in_place_and_reopened(tmp_path, monkeypatch, source):
+    """Local adoption preserves the open mount's subscribers, history and event stream."""
+    import asyncio
+    import queue
+    from gateway.session_local_migration import resolve_local_target
+    from hermes_state_local import local_receipt
+
+    connection, ref, _ = await _imported_connection(tmp_path, monkeypatch, source)
+    authority, sid = connection.authority, ref.session_id
+    frames = queue.Queue()
+    authority.events[connection.actor.transport_id] = SimpleNamespace(write=lambda frame: frames.put(frame) or True)
+    opened = await connection.resume(ref, {})
+    assert [message['content'] for message in opened['messages']] == ['Please fix the flaky test.', 'Looking.']
+    info = await connection.dispatch({'id': 1, 'method': 'session.info', 'params': {'session_id': sid}})
+    assert info['result']['source'] == source
+
+    assert resolve_local_target(authority, connection.actor, sid) == ref
+    receipt = local_receipt(authority.db, sid)
+    assert receipt['policy']['source'] == 'cli'
+    assert authority.db.get_session(sid)['source'] == source
+    authority.authorize(connection.actor, ref, 'session:submit')
+    authority.sessions[sid].event_stream.publish(sid, {'text': 'continued'})
+    frame = await asyncio.to_thread(frames.get, True, 5)
+    assert frame['params']['payload'] == {'text': 'continued'}
+    detached = await connection.detach(ref, {'session_id': sid, 'subscription_id': opened['subscription_id']})
+    assert detached['detached'] is True
+
+    authority.sessions.clear()
+    again = await connection.resume(ref, {})
+    assert again['session_id'] == sid
+    assert local_receipt(authority.db, sid) == receipt
+    assert [message['content'] for message in again['messages']] == ['Please fix the flaky test.', 'Looking.']
+
+
+def _imported_row(**over):
+    row = {'id': 'imported-1', 'source': 'claude-code', 'chat_id': None,
+           'session_key': None, 'profile_name': None, 'user_id': None,
+           'origin_json': json.dumps({'imported_from': {
+               'tool': 'claude-code', 'path': '/x/abc-123.jsonl', 'foreign_session_id': 'abc-123'}})}
+    row.update(over)
+    return row
+
+
+def test_validate_legacy_row_still_refuses_routed_and_foreign_import_labels(tmp_path):
+    """Only the importer's own unrouted, unowned row is adoptable under a foreign-tool label."""
+    from hermes_state import SessionDB
+    from hermes_state_local_migration import validate_legacy_row
+    from hermes_state_runtime import RuntimeStoreError
+
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        for override in (
+            {'session_key': 'agent:main:cli:dm:imported-1'},
+            {'chat_id': 'local-other-route'},
+            {'user_id': 'nous:someone-else'},
+            {'origin_json': None},
+            {'profile_name': 'someone-else'},
+            {'source': 'cli', 'session_key': 'agent:main:cli:dm:x'},
+        ):
+            with pytest.raises(RuntimeStoreError, match='not_found'):
+                validate_legacy_row(db, _imported_row(**override))
+        validate_legacy_row(db, _imported_row())
+    finally:
+        db.close()
