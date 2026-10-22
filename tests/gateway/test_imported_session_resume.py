@@ -98,3 +98,35 @@ def test_validate_legacy_row_still_refuses_routed_and_foreign_import_labels(tmp_
         validate_legacy_row(db, _imported_row())
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_desktop_import_resumes_and_the_importer_still_finds_it(tmp_path, monkeypatch):
+    """Adoption and each turn's peer refresh retain the browser's import identity."""
+    from gateway.session_local_migration import resolve_local_target
+
+    connection, ref, origin = await _imported_connection(tmp_path, monkeypatch)
+    authority, sid = connection.authority, ref.session_id
+    db, store = authority.db, authority.runner.session_store
+    await connection.resume(ref, {})
+    resolve_local_target(authority, connection.actor, sid)
+    assert db.find_foreign_import(origin) == sid
+    live = authority.sessions[sid]
+    store._record_gateway_session_peer(sid, live.route, live.source)
+    assert db.find_foreign_import(origin) == sid
+
+
+def test_an_import_stamp_beside_a_route_is_not_adoptable(tmp_path):
+    """``imported_from`` makes a row unrouted history only when it is all ``origin_json`` holds."""
+    from hermes_state import SessionDB
+    from hermes_state_local_migration import validate_legacy_row
+    from hermes_state_runtime import RuntimeStoreError
+
+    routed = {"platform": "telegram", "chat_id": "4242", "chat_type": "dm",
+              "imported_from": json.loads(_imported_row()["origin_json"])["imported_from"]}
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        with pytest.raises(RuntimeStoreError, match="not_found"):
+            validate_legacy_row(db, _imported_row(origin_json=json.dumps(routed)))
+    finally:
+        db.close()
