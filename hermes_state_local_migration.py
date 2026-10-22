@@ -24,20 +24,41 @@ IMPORTED_LOCAL_SOURCES = frozenset({'claude-code', 'codex-cli'})
 LEGACY_CREATION_SOURCES = {'desktop': 'gui', 'claude-code': 'cli', 'codex-cli': 'cli'}
 
 
+def _import_record(origin_json):
+    """``(imported_from record or None, whether other keys sit beside it)`` for an ``origin_json``."""
+    try:
+        origin = json.loads(origin_json) if origin_json else None
+    except (TypeError, ValueError):
+        return None, False
+    if not isinstance(origin, dict):
+        return None, False
+    imported = origin.get('imported_from')
+    return (imported if isinstance(imported, dict) and imported.get('tool') else None), len(origin) > 1
+
+
 def imported_provenance(row):
     """The ``imported_from`` record an importer stamped on this row, or None.
 
     ``origin_json`` is a route on a canonical row and provenance on an imported one, so the
-    importing tool has to name itself there: both importers stamp ``imported_from.tool``.
+    importing tool has to name itself there: both importers stamp ``imported_from.tool``. Adoption
+    keeps the record beside the route it writes, so a record next to any other key is a route.
     """
-    if row.get('source') not in IMPORTED_LOCAL_SOURCES or not row.get('origin_json'):
+    if row.get('source') not in IMPORTED_LOCAL_SOURCES:
         return None
-    try:
-        origin = json.loads(row['origin_json'])
-    except (TypeError, ValueError):
-        return None
-    imported = origin.get('imported_from') if isinstance(origin, dict) else None
-    return imported if isinstance(imported, dict) and imported.get('tool') else None
+    imported, routed = _import_record(row.get('origin_json'))
+    return None if routed else imported
+
+
+def with_import_provenance(stored_origin_json, origin_json):
+    """*origin_json*, a route written over a row's stored origin, keeping the row's ``imported_from``.
+
+    Only importers write that record, and they find an earlier import by it
+    (``find_foreign_import``), so a route written on adoption or refreshed each turn keeps it.
+    """
+    imported, _ = _import_record(stored_origin_json)
+    if imported is None:
+        return origin_json
+    return json.dumps({**json.loads(origin_json), 'imported_from': imported}, ensure_ascii=False)
 
 
 def unrouted_import(row):
@@ -122,7 +143,8 @@ def bind_legacy_target(db, conn, receipt):
     # Binding is a read-side claim: the row keeps main's ``source`` label and its end stamp. The first
     # admitted turn reopens it (``reopen_local_session``), exactly as the classic surfaces did.
     conn.execute('UPDATE sessions SET session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
-                 (receipt['route'], receipt['session_id'], receipt['principal_id'], 'dm', _json(source), target))
+                 (receipt['route'], receipt['session_id'], receipt['principal_id'], 'dm',
+                  with_import_provenance(row['origin_json'], _json(source)), target))
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, _json({
         'session_id': receipt['session_id'], 'profile_id': receipt['profile_id'],
         'principal_id': receipt['principal_id'], 'legacy_session_id': target})))
