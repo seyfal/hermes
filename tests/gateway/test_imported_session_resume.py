@@ -154,3 +154,56 @@ def test_validate_legacy_row_still_refuses_routed_and_foreign_import_labels(tmp_
         validate_legacy_row(db, _imported_row())
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_desktop_import_resumes_and_the_importer_still_finds_it(tmp_path, monkeypatch):
+    """The Desktop browser's import opens through ``session.resume``, and adoption keeps the
+    ``imported_from`` record the browser reads to answer "already imported" instead of a duplicate."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {"platform_toolsets": {"cli": []}, "model": {"model": "demo-model", "provider": "custom"}}
+    monkeypatch.setattr(run, "_load_gateway_config", lambda *_path: config)
+    monkeypatch.setattr(run, "_resolve_gateway_model", lambda _config: "demo-model")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    db = store._db
+    origin = {"tool": "claude-code", "path": str(tmp_path / "abc-123.jsonl"), "foreign_session_id": "abc-123"}
+    sid = db.import_foreign_history(origin, [{"role": "user", "content": "Please fix the flaky test."},
+                                             {"role": "assistant", "content": "Looking."}],
+                                    title="Fix the flaky test", cwd=None, profile="default")["session_id"]
+
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id="owner")
+    native = AuthorityConnection(authority, object(), {"provider": "local", "user_id": "native",
+                                                       "profile_id": str(tmp_path), "instance_id": "owner"})
+    reply = await native.dispatch({"id": 1, "method": "session.resume", "params": {"session_id": sid}})
+    assert "result" in reply, reply
+    assert [m["content"] for m in reply["result"]["messages"]] == ["Please fix the flaky test.", "Looking."]
+    assert db.find_foreign_import(origin) == sid
+    # Every turn refreshes the routing peer, origin included.
+    live = authority.sessions[sid]
+    store._record_gateway_session_peer(sid, live.route, live.source)
+    assert db.find_foreign_import(origin) == sid
+
+
+def test_an_import_stamp_beside_a_route_is_not_adoptable(tmp_path):
+    """``imported_from`` makes a row unrouted history only when it is all ``origin_json`` holds."""
+    from hermes_state import SessionDB
+    from hermes_state_local_migration import validate_legacy_row
+    from hermes_state_runtime import RuntimeStoreError
+
+    routed = {"platform": "telegram", "chat_id": "4242", "chat_type": "dm",
+              "imported_from": json.loads(_imported_row()["origin_json"])["imported_from"]}
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        with pytest.raises(RuntimeStoreError, match="not_found"):
+            validate_legacy_row(db, _imported_row(origin_json=json.dumps(routed)))
+    finally:
+        db.close()
