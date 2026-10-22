@@ -77,6 +77,7 @@ Or in-session:
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search` (via `includes`) | Read-only research + media generation. No file writes, no terminal, no code execution. |
 | `search` | `web_search` | Web search only (without extract). |
 | `session_search` | `session_search` | Search past conversation sessions. |
+| `peer_messaging` | `peer_sessions`, `peer_send` | Discover recent peer sessions and send local messages within the same Hermes home. Discovery/sending are off by default; enable via `hermes tools` → Peer Messaging. Receiving does not require the toolset. The recipient reads its mailbox before each model request and gets the message as a framed peer row without user authority; idle sessions are not started. See [delivery semantics](./tools-reference.md#peer_messaging-toolset). |
 | `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
 | `terminal` | `process_manage`, `terminal` | Shell command execution and background process management. |
 | `todo` | `todo_list` | Task list management within a session. |
