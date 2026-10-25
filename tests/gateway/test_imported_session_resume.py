@@ -67,7 +67,7 @@ async def test_session_resume_remaps_an_imported_foreign_row(monkeypatch):
         db=SimpleNamespace(get_session=lambda sid: _imported_row() if sid == "imported-1" else None,
                            get_compression_tip=lambda sid: None),
         sessions={"imported-1": SimpleNamespace(source=SimpleNamespace(platform=None),
-                                                route="agent:main:cli:dm:imported-1")},
+                                                route="agent:main:cli:dm:imported-1", event_stream=object())},
         authorize=lambda *args, **kwargs: None,
         attach=AsyncMock(return_value=_attach_snapshot(SessionRef("fixture", "imported-1"))),
     )
