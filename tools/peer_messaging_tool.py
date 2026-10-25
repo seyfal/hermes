@@ -293,8 +293,8 @@ def _read_peer_message(path: Path) -> Optional[dict[str, Any]]:
 PEER_SESSIONS_SCHEMA = {
     "name": "peer_sessions",
     "description": (
-        "List the user's other recently active Hermes sessions on this machine — the "
-        "peers this session can message with peer_send. Returns each peer's session id, "
+        "List the user's other recently active Hermes sessions on this machine. These "
+        "are the peers this session can message with peer_send. Returns each peer's session id, "
         "title, source, working directory and last activity. Local-only discovery over "
         "the session store; nothing crosses the network."),
     "parameters": {
@@ -313,8 +313,8 @@ PEER_SESSIONS_SCHEMA = {
 PEER_SEND_SCHEMA = {
     "name": "peer_send",
     "description": (
-        "Send a message to another of the user's Hermes sessions on this machine (find "
-        "targets with peer_sessions). Use it when a change here affects what another "
+        "Send a message to another of the user's Hermes sessions on this machine. Find "
+        "targets with peer_sessions. Use it when a change here affects what another "
         "session is building, or to hand over an answer another session is blocked on. "
         "Delivery is local-only (a mailbox under the Hermes home, never the network); "
         "the peer receives it mid-turn if running, else at the start of its next turn."),
