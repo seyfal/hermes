@@ -127,6 +127,15 @@ TOOLSETS = {
     "context_engine": _ts("Runtime tools exposed by the active context engine"),
     "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
     "connections": _ts("Remote connector discovery, execution, and account authorization", ["manage_connections"]),
+    "peer_messaging": _ts(
+        "Inter-session messaging (inspired by Muse Code): discover the user's other "
+        "live Hermes sessions on this machine and send them messages. Local-only "
+        "mailboxes under the Hermes home; a recipient reads its mailbox before each model "
+        "request, mid-turn included, even without these tools enabled. "
+        "Discovery and sending are off by default; enable in `hermes tools` → Peer Messaging. "
+        "Idle sessions are not started.",
+        ["peer_sessions", "peer_send"],
+    ),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
     "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
 
