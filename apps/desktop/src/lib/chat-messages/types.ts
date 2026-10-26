@@ -24,6 +24,8 @@ export interface TimelinePartMetadata {
   storedResultToolName?: string
   /** Durable source occurrence, even when several backend rows share a bubble. */
   sourceRowId?: number
+  /** Scoped canonical occurrences represented by this part (call and result may differ). */
+  sourceDisplayIdentities?: string[]
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
@@ -65,6 +67,8 @@ export type ChatMessage = {
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
   rowId?: number
+  /** Canonical first source occurrence, qualified by its storage segment. */
+  displayIdentity?: string
   /** Backend transcript rows this message represents — the hydration fold
    *  merges a turn's tool rows into the assistant message they belong to, so a
    *  message is not one backend row. The older-page offset (transcript-tail) is
