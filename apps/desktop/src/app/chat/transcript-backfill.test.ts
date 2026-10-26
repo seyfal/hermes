@@ -262,7 +262,9 @@ describe('graftRefreshedTailOntoBackfill', () => {
 
     const merged = graftRefreshedTailOntoBackfill(refreshed, previous)
 
-    expect(merged.map(message => message.rowId)).toEqual([662, 700, 701, 746])
+    // Without display addresses, the retained-only prefix stays before the page.
+    // The server's [662, 701, 746] order is authoritative, not physical-id sorting.
+    expect(merged.map(message => message.rowId)).toEqual([700, 662, 701, 746])
     expect(merged.find(message => message.rowId === 701)).toBe(refreshed[1])
   })
 

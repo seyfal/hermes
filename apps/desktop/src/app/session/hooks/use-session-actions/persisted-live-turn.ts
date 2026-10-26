@@ -5,6 +5,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
+import { transcriptRowIds } from './pending-turn-identity'
 import { reconcileDurableHistory } from './utils'
 
 const rowId = (row: SessionMessage) => row.row_id ?? row.id
@@ -21,6 +22,7 @@ interface PersistedTurn {
   prompt: ChatMessage
   start: number
   rawIntervals: string[]
+  complete: boolean
   messages: ChatMessage[]
 }
 
@@ -32,7 +34,7 @@ function candidateTurn(
   corrections: string[]
 ): PersistedTurn | null {
   const promptId = rowId(rows[start])
-  const displayStart = messages.findIndex(message => message.role === 'user' && message.rowId === promptId)
+  const displayStart = messages.findIndex(message => message.rowId === promptId)
 
   if (promptId === undefined || displayStart < 0) {
     return null
@@ -40,6 +42,8 @@ function candidateTurn(
 
   const turnMessages = messages.slice(displayStart + 1)
   const intervals: string[][] = [[]]
+  const wake = messages[displayStart].role === 'system'
+  let complete = false
 
   for (const row of rows.slice(start + 1)) {
     if (row.role === 'user') {
@@ -55,7 +59,7 @@ function candidateTurn(
 
       intervals.push([])
     } else if (row.role === 'assistant') {
-      if (!hasTools(row) || typeof row.content !== 'string' || row.display_kind === 'hidden') {
+      if ((!wake && !hasTools(row)) || typeof row.content !== 'string' || row.display_kind === 'hidden') {
         return null
       }
 
@@ -81,6 +85,7 @@ function candidateTurn(
       }
 
       intervals.at(-1)!.push(raw)
+      complete = !hasTools(row)
     } else if (row.role !== 'tool') {
       return null
     }
@@ -90,7 +95,8 @@ function candidateTurn(
     prompt: messages[displayStart],
     start: displayStart,
     rawIntervals: intervals.map(texts => texts.join('\n\n')),
-    messages: turnMessages
+    messages: turnMessages,
+    complete
   }
 }
 
@@ -104,10 +110,8 @@ function locateTurn(
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index]
 
-    // A final reply is an actual boundary; durable tool commentary is not.
-    if (row.role === 'assistant' && !hasTools(row) && typeof row.content === 'string' && row.content.trim()) {
-      break
-    }
+    // A completed wake can hydrate before its terminal event. Validate its
+    // initiating row and every following source row before reconciling it.
 
     if (
       row.role === 'user' &&
@@ -190,6 +194,105 @@ function snapshotIntervals(inflight: NonNullable<SessionResumeResult['inflight']
   )
 }
 
+/** A wake may stream before its initiating notice reaches this renderer. */
+function localWakeBoundary(previous: ChatMessage[], messages: ChatMessage[], turn: PersistedTurn): number {
+  if (turn.prompt.role !== 'system') {
+    return -1
+  }
+
+  const preceding = new Set(messages.slice(0, turn.start).flatMap(transcriptRowIds))
+  const boundary = previous.findLastIndex(message => transcriptRowIds(message).some(id => preceding.has(id)))
+  const tail = previous.slice(boundary + 1)
+
+  const tools = new Set(
+    turn.messages.flatMap(message =>
+      message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+    )
+  )
+
+  // Both the preceding durable history and a tool in this wake must agree.
+  // Equal notice labels or repeated tool ids in earlier turns are not anchors.
+  return boundary >= 0 &&
+    tail.every(message => message.role === 'assistant') &&
+    tail.some(message => message.parts.some(part => part.type === 'tool-call' && tools.has(part.toolCallId)))
+    ? boundary
+    : -1
+}
+
+function localTurnBoundary(previous: ChatMessage[], messages: ChatMessage[], turn: PersistedTurn): number {
+  let localStart = previous.findIndex(message => message.rowId === turn.prompt.rowId)
+
+  if (localStart < 0) {
+    localStart = localWakeBoundary(previous, messages, turn)
+  }
+
+  if (localStart < 0) {
+    const tools = new Set(
+      turn.messages.flatMap(message =>
+        message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+      )
+    )
+
+    // Optimistic prompt rows have no durable id yet. Shared tool identity after
+    // the matching prompt can anchor the turn, never the prompt text alone.
+    localStart = previous.findLastIndex(
+      (message, index) =>
+        message.role === 'user' &&
+        userText(chatMessageText(message)) === userText(chatMessageText(turn.prompt)) &&
+        previous
+          .slice(index + 1)
+          .some(row => row.parts.some(part => part.type === 'tool-call' && tools.has(part.toolCallId)))
+    )
+  }
+
+  return localStart
+}
+
+/** Keep the stream owner when the anchored wake commits before its terminal event. */
+function mergeStoredInterval(
+  durable: ChatMessage[],
+  cached: ChatMessage[],
+  projected: ChatMessage[],
+  complete: boolean
+): ChatMessage[] {
+  const remainder = mergeLiveAssistantRun(projected, withoutCoveredAssistantPrefix(durable, cached))
+  const owner = cached.findLast(message => message.pending && message.id.startsWith('assistant-stream-'))
+
+  if (complete && owner && remainder.length === 0) {
+    const last = durable.findLastIndex(message => message.role === 'assistant')
+
+    if (last >= 0) {
+      durable[last] = { ...durable[last], id: owner.id }
+    }
+  }
+
+  return [...durable, ...remainder]
+}
+
+function appendQueuedUser(
+  result: ChatMessage[],
+  turnStart: number,
+  projection: Pick<SessionResumeResult, 'queued' | 'session_id'>
+): void {
+  if (projection.queued?.user) {
+    const id = `user-queued-${projection.session_id}`
+
+    const queuedIndex = result.findIndex(
+      (message, index) => index >= turnStart && message.role === 'user' && message.id === id
+    )
+
+    const parts = [textPart(projection.queued.user)]
+
+    // The anchored turn has one next-turn queue slot. Refresh its projection
+    // in place; equal correction/optimistic user text is a different occurrence.
+    if (queuedIndex >= 0) {
+      result[queuedIndex] = { ...result[queuedIndex], parts }
+    } else {
+      result.push({ id, role: 'user', parts })
+    }
+  }
+}
+
 /**
  * Reconcile the anchored partial turn before role-ordinal pairing sees it.
  * Missing provenance takes the legacy path without subtracting any snapshot text.
@@ -212,26 +315,7 @@ export function reconcilePersistedLiveTurn(
     return null
   }
 
-  let localStart = previous.findIndex(message => message.role === 'user' && message.rowId === turn.prompt.rowId)
-
-  if (localStart < 0) {
-    const tools = new Set(
-      turn.messages.flatMap(message =>
-        message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
-      )
-    )
-
-    // Optimistic prompt rows have no durable id yet. Shared tool identity after
-    // the matching prompt can anchor the turn, never the prompt text alone.
-    localStart = previous.findLastIndex(
-      (message, index) =>
-        message.role === 'user' &&
-        userText(chatMessageText(message)) === userText(chatMessageText(turn.prompt)) &&
-        previous
-          .slice(index + 1)
-          .some(row => row.parts.some(part => part.type === 'tool-call' && tools.has(part.toolCallId)))
-    )
-  }
+  const localStart = localTurnBoundary(previous, messages, turn)
 
   const stored = splitAtUsers(turn.messages)
   const cached = splitAtUsers(localStart >= 0 ? previous.slice(localStart + 1) : [])
@@ -259,7 +343,7 @@ export function reconcilePersistedLiveTurn(
     const error = final ? inflight.error?.trim() : undefined
 
     const projected: ChatMessage[] =
-      text.trim() || final
+      text.trim() || (final && (!turn.complete || error))
         ? [
             {
               id: final
@@ -274,8 +358,9 @@ export function reconcilePersistedLiveTurn(
           ]
         : []
 
-    const local = pairedLocal ? withoutCoveredAssistantPrefix(durable, cached.intervals[index] ?? []) : []
-    result.push(...durable, ...mergeLiveAssistantRun(projected, local))
+    result.push(
+      ...mergeStoredInterval(durable, pairedLocal ? (cached.intervals[index] ?? []) : [], projected, turn.complete)
+    )
 
     if (!final) {
       const correction = stored.users[index] ?? {
@@ -308,23 +393,7 @@ export function reconcilePersistedLiveTurn(
 
   result.push(...unpairedLocal)
 
-  if (projection.queued?.user) {
-    const id = `user-queued-${projection.session_id}`
-
-    const queuedIndex = result.findIndex(
-      (message, index) => index >= turnStart && message.role === 'user' && message.id === id
-    )
-
-    const parts = [textPart(projection.queued.user)]
-
-    // The anchored turn has one next-turn queue slot. Refresh its projection
-    // in place; equal correction/optimistic user text is a different occurrence.
-    if (queuedIndex >= 0) {
-      result[queuedIndex] = { ...result[queuedIndex], parts }
-    } else {
-      result.push({ id, role: 'user', parts })
-    }
-  }
+  appendQueuedUser(result, turnStart, projection)
 
   return result
 }
