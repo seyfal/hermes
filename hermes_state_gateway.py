@@ -249,12 +249,18 @@ class SessionGatewayMixin:
         """
         if not session_id or not session_key:
             return
-        identity = (
-            session_key, source, user_id, chat_id, chat_type, thread_id, display_name, origin_json,
-            transport_profile)
         ancestors = include_compression_ancestors
-        query_params = [session_id, *identity] if ancestors else [*identity, session_id]
         def _do(conn):
+            # An import's ``imported_from`` survives the route refresh (with_import_provenance).
+            from hermes_state_local_migration import IMPORTED_LOCAL_SOURCES, with_import_provenance
+            route_origin = origin_json
+            if route_origin is not None and source in IMPORTED_LOCAL_SOURCES:
+                stored = conn.execute("SELECT origin_json FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                route_origin = with_import_provenance(stored[0] if stored else None, route_origin)
+            identity = (
+                session_key, source, user_id, chat_id, chat_type, thread_id, display_name, route_origin,
+                transport_profile)
+            query_params = [session_id, *identity] if ancestors else [*identity, session_id]
             conn.execute(
                 f"""{_COMPRESSION_LINEAGE_CTE if ancestors else ""}
                    UPDATE sessions
