@@ -13,6 +13,17 @@ export function assistantPartCovered(stored: ChatMessagePart, local: ChatMessage
 
   const ignored = new Set(['timestamp', 'completedAt', 'sourceRowId'])
 
+  if (local.type === 'tool-call') {
+    // Hydration may omit derived argument text and empty result metadata.
+    if (!local.argsText || local.argsText === JSON.stringify(local.args)) {
+      ignored.add('argsText')
+    }
+
+    if (!Object.keys(local.toolResultMetadata ?? {}).length) {
+      ignored.add('toolResultMetadata')
+    }
+  }
+
   return Object.entries(local).every(([key, value]) =>
     ignored.has(key) || value === undefined || JSON.stringify(Reflect.get(stored, key)) === JSON.stringify(value)
   )
