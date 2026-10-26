@@ -78,6 +78,19 @@ def legacy_user_display_group(db, row, indexed):
     return db._display_identity(db._display_dedupe_key(row)), row["id"]
 
 
+def _display_row_identity(db, conn, row):
+    identity = db._display_identity(db._display_dedupe_key(row))
+    if row["_compressed_summary"] and row["message_uid"]:
+        original = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND message_uid = ? "
+            "AND _compressed_summary = 0 AND (active = 1 OR compacted = 1) ORDER BY id LIMIT 1",
+            (row["session_id"], row["message_uid"]),
+        ).fetchone()
+        if original is not None:
+            identity = db._display_identity(db._display_dedupe_key(original))
+    return identity
+
+
 def _live_or_column(msg: Mapping[str, Any], live_key: str, column: str) -> Any:
     """Flushed dicts and batch rows carry the live key; import payloads carry the column name."""
     return msg.get(live_key) if live_key in msg else msg.get(column)

@@ -25,6 +25,7 @@ from hermes_state_common import (
 from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
+from hermes_state_display import restore_dirty_display_rows
 from hermes_state_identity import (
     authored_user_occurrence, legacy_user_display_group, user_display_index_current,
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
@@ -465,17 +466,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 session_id, msg, timestamp
             ),
             decode_row_fn=self._decoded_repair_row,
+            restore_display_fn=lambda: restore_dirty_display_rows(self, conn, session_id),
         )
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
-        if len(inserted_rows) < len(messages) and {"display_order", "display_identity"} <= set(
-                self._message_column_names(conn)):
-            # Blank-row repair fills a streaming placeholder assistant row in place — an
-            # UPDATE of ``content``, the identity trigger's re-keying column — so the filled
-            # row (and any identity twin) sits outside the indexed display projections until
-            # a reader backfills. Repair removes a message from the batch exactly when it
-            # wrote or adopted one, so a shrunken batch is the signal; the fold is idempotent
-            # and writes nothing when adoption alone shrank the batch (#128468).
-            self._reconcile_display_orders(conn, session_id)
         self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
         return inserted
 
@@ -528,7 +521,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             # rewrite does — otherwise the row stays out of the indexed projections until a
             # reader backfills the session (#128468).
             if {"display_order", "display_identity"} <= set(self._message_column_names(conn)):
-                self._reconcile_display_orders(conn, session_id)
+                restore_dirty_display_rows(self, conn, session_id)
             return True
         return self._execute_write(_do)
 
@@ -1050,7 +1043,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             if rowcount is None or rowcount < 0:
                 rowcount = conn.execute("SELECT changes()").fetchone()[0]
             if rowcount and {"display_order", "display_identity"} <= set(self._message_column_names(conn)):
-                self._reconcile_display_orders(conn, session_id)
+                restore_dirty_display_rows(self, conn, session_id)
             return rowcount
 
         return self._execute_write(_do)
@@ -2010,7 +2003,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                         f"SELECT DISTINCT session_id FROM messages WHERE id IN ({_placeholders(ids)})",
                         ids).fetchall()]
                     for sid in touched:
-                        self._reconcile_display_orders(conn, sid)
+                        restore_dirty_display_rows(self, conn, sid)
             return ids
         affected_ids = self._execute_write(_do)
         if affected_ids:
