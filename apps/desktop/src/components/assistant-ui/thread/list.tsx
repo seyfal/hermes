@@ -15,7 +15,7 @@ import {
   useRef,
   useState
 } from 'react'
-import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
+import { type GetTargetScrollTop } from 'use-stick-to-bottom'
 
 import { useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-visibility'
@@ -545,29 +545,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // spring can't tell live-token growth from a session-switch bulk relayout, and
   // chasing the latter reads as the view scrolling to random spots before
   // settling. Its refs hang off our own DOM so the sticky human bubbles survive.
-  const { following: isAtBottom, current: followingRef, set: setFollowing } = useThreadScrollOwner()
-
-  const { scrollRef, contentRef, scrollToBottom, stopScroll } = useStickToBottom({
-    initial: 'instant',
-    resize: 'instant',
-    targetScrollTop: (top, elements) => followingRef.current ? resolveThreadScrollTarget(top, elements) : elements.scrollElement.scrollTop
-  })
-
-  // #115464: explicit snaps go through the same selection pin as the resize
-  // follow above — without this a snap still flips isAtBottom and kicks an
-  // animation while the user is selecting transcript text.
-  const scrollToBottomUnlessSelecting = useCallback(
-    (...args: Parameters<typeof scrollToBottom>) => {
-      if (hasTranscriptTextSelection(scrollRef.current)) {
-        return undefined
-      }
-
-      setFollowing(true)
-
-      return scrollToBottom(...args)
-    },
-    [scrollRef, scrollToBottom, setFollowing]
-  )
+  const { following: isAtBottom, followingRef, setFollowing, scrollRef, contentRef, scrollToBottomUnlessSelecting, stopScroll } =
+    useThreadScrollOwner(resolveThreadScrollTarget, hasTranscriptTextSelection)
 
   const { olderAvailable, expandWindow, isHistorical, returnToLatest } = useTranscriptWindow()
 
