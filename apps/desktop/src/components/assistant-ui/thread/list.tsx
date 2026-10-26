@@ -1201,6 +1201,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     const cancelRestore = () => {
       applyRestoreRef.current = null
+      restoreFromBottomRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
       releaseSwitching()
@@ -1213,7 +1214,6 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       stopScroll()
       loadSettledRef.current = true
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
-      restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
     }
 
     cancelRestoreRef.current = target.kind === 'offset' ? cancelRestore : () => resizeObserver.disconnect()
