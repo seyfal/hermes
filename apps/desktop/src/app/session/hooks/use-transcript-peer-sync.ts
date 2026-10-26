@@ -6,7 +6,10 @@ import {
   resolveActiveTranscriptSession
 } from '@/app/contrib/hooks/use-background-sync'
 import type { ClientSessionState } from '@/app/types'
-import { $sessionTiles } from '@/store/session-states'
+import type { ProfileScope } from '@/hermes'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
+import { $sessionTiles, type SessionTile } from '@/store/session-states'
 import { onTranscriptChanged } from '@/store/transcript-sync'
 
 interface TranscriptPeerSyncOptions {
@@ -18,6 +21,24 @@ interface TranscriptPeerSyncOptions {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+}
+
+/** Ambient routing matters only when the target has no explicit connection/profile. */
+function scopeKey(scope: ProfileScope): string {
+  return JSON.stringify([
+    typeof scope === 'object' && scope?.connectionId ? scope.connectionId : $connection.get(),
+    typeof scope === 'string' ? scope : (scope?.profile ?? $activeGatewayProfile.get())
+  ])
+}
+
+function tileScope(tile: SessionTile): ProfileScope {
+  return profileScopeForTranscriptSession(
+    tile.ownerRoute
+      ? { ownerRoute: tile.ownerRoute }
+      : tile.ownerProfile
+        ? { profile: tile.ownerProfile }
+        : resolveActiveTranscriptSession(tile.storedSessionId, tile.runtimeId!)
+  )
 }
 
 /**
@@ -52,50 +73,61 @@ export function useTranscriptPeerSync({
       if (!storedSessionId) {
         return
       }
-      void (async () => {
-        const selected = selectedStoredSessionIdRef.current
-        const runtimeId = activeSessionIdRef.current
 
-        if (!cancelled && selected === storedSessionId && runtimeId && !busyRef.current) {
-          await hydrateStoredSessionTranscript({
-            attempts: 1,
-            isCurrent: latestRefresh(runtimeId),
-            runtimeSessionId: runtimeId,
-            storedProfile: profileScopeForTranscriptSession(resolveActiveTranscriptSession(storedSessionId, runtimeId)),
-            storedSessionId,
-            updateSessionState
-          })
+      const runtimeId = activeSessionIdRef.current
+
+      const activeScope = () =>
+        profileScopeForTranscriptSession(resolveActiveTranscriptSession(storedSessionId, runtimeId!))
+
+      const selected = selectedStoredSessionIdRef.current === storedSessionId
+
+      if (selected && runtimeId && !busyRef.current) {
+        const storedProfile = activeScope()
+        const owner = scopeKey(storedProfile)
+        const latest = latestRefresh(runtimeId)
+        void hydrateStoredSessionTranscript({
+          attempts: 1,
+          isCurrent: () =>
+            latest() &&
+            activeSessionIdRef.current === runtimeId &&
+            selectedStoredSessionIdRef.current === storedSessionId &&
+            !busyRef.current &&
+            scopeKey(activeScope()) === owner,
+          runtimeSessionId: runtimeId,
+          storedProfile,
+          storedSessionId,
+          updateSessionState
+        })
+      }
+
+      // Capture and fence all targets before awaiting any read. A slow foreground
+      // must not let an older notification launch a newer tile request later.
+      for (const tile of $sessionTiles.get()) {
+        if (tile.storedSessionId !== storedSessionId || !tile.runtimeId || (selected && tile.runtimeId === runtimeId)) {
+          continue
         }
 
-        if (cancelled) {
-          return
-        }
-
-        for (const tile of $sessionTiles.get()) {
-          if (tile.storedSessionId !== storedSessionId || !tile.runtimeId || tile.runtimeId === runtimeId) {
-            continue
-          }
-
-          const owner = tile.ownerRoute
-            ? { ownerRoute: tile.ownerRoute, profile: tile.ownerProfile ?? tile.ownerRoute.profile }
-            : tile.ownerProfile
-              ? { profile: tile.ownerProfile }
-              : resolveActiveTranscriptSession(storedSessionId, tile.runtimeId)
-
-          await hydrateStoredSessionTranscript({
-            attempts: 1,
-            isCurrent: latestRefresh(tile.runtimeId),
-            runtimeSessionId: tile.runtimeId,
-            storedProfile: profileScopeForTranscriptSession(owner),
-            storedSessionId,
-            updateSessionState
-          })
-
-          if (cancelled) {
-            return
-          }
-        }
-      })()
+        const storedProfile = tileScope(tile)
+        const owner = scopeKey(storedProfile)
+        const latest = latestRefresh(tile.runtimeId)
+        void hydrateStoredSessionTranscript({
+          attempts: 1,
+          isCurrent: () =>
+            latest() &&
+            $sessionTiles
+              .get()
+              .some(
+                current =>
+                  current.runtimeId === tile.runtimeId &&
+                  current.storedSessionId === storedSessionId &&
+                  scopeKey(tileScope(current)) === owner
+              ),
+          runtimeSessionId: tile.runtimeId,
+          storedProfile,
+          storedSessionId,
+          updateSessionState
+        })
+      }
     })
 
     return () => {
