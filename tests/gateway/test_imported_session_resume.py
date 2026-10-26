@@ -68,6 +68,24 @@ async def test_an_imported_mount_is_adopted_in_place_and_reopened(tmp_path, monk
     assert [message['content'] for message in again['messages']] == ['Please fix the flaky test.', 'Looking.']
 
 
+@pytest.mark.asyncio
+async def test_title_resume_continues_an_imported_mount_through_the_fifo(tmp_path, monkeypatch):
+    """The CLI's local-title resume binds a writable route without changing a history-only open."""
+    from hermes_state_runtime import list_session_admissions
+
+    connection, ref, origin = await _imported_connection(tmp_path, monkeypatch)
+    await connection.resume(ref, {})
+    continued = await connection.resume(ref, {'title': ref.session_id})
+    assert continued['session_id'] == ref.session_id
+    # Admission is real; only execution (which would call a model) is held here.
+    monkeypatch.setattr(connection.authority, '_schedule', lambda ref: None)
+    admitted = await connection.submit(ref, {'text': 'Continue the fix.', 'submission_id': 'next'})
+    assert admitted['status'] == 'queued'
+    pending = list_session_admissions(connection.authority.db, session_id=ref.session_id)
+    assert [item['payload']['text'] for item in pending] == ['Continue the fix.']
+    assert connection.authority.db.find_foreign_import(origin) == ref.session_id
+
+
 def _imported_row(**over):
     row = {'id': 'imported-1', 'source': 'claude-code', 'chat_id': None,
            'session_key': None, 'profile_name': None, 'user_id': None,
