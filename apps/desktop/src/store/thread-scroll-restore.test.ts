@@ -27,11 +27,13 @@ describe('shouldReapplyFrozenThreadScrollOffset', () => {
     expect(shouldReapplyFrozenThreadScrollOffset(OFFSET, true, metrics, metrics)).toBe(false)
   })
 
-  it('re-pins when transcript content height grew (streaming, prepend, markdown)', () => {
+  it('requires visible displacement before re-pinning a reader after transcript growth', () => {
     const previous = { clearanceHeight: 120, clientHeight: 600, scrollHeight: 5000 }
     const next = { clearanceHeight: 120, clientHeight: 600, scrollHeight: 5600 }
 
-    expect(shouldReapplyFrozenThreadScrollOffset(OFFSET, true, previous, next)).toBe(true)
+    expect(shouldReapplyFrozenThreadScrollOffset(OFFSET, true, previous, next)).toBe(false)
+    expect(shouldReapplyFrozenThreadScrollOffset(OFFSET, true, { ...previous, anchorTop: 100 }, { ...next, anchorTop: 100 })).toBe(false)
+    expect(shouldReapplyFrozenThreadScrollOffset(OFFSET, true, { ...previous, anchorTop: 100 }, { ...next, anchorTop: 700 })).toBe(true)
     expect(threadScrollTargetTop(OFFSET, next)).toBe(5600 - 600 - 800)
   })
 
