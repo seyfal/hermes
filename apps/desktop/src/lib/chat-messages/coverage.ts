@@ -1,24 +1,48 @@
-import { normalizeWs as normalizedText } from './parts'
+import { assistantPartCovered, assistantPartOccurrence } from './part-coverage'
 import type { ChatMessage, ChatMessagePart } from './types'
 
-function sameOccurrencePart(stored: ChatMessagePart, local: ChatMessagePart): boolean {
-  if (stored.type === 'tool-call' && local.type === 'tool-call') {
-    return Boolean(stored.toolCallId) && stored.toolCallId === local.toolCallId
-  }
+function uniqueOccurrences(parts: ChatMessagePart[]): Map<string, number> {
+  const positions = new Map<string, number>()
 
-  if ((stored.type === 'text' || stored.type === 'reasoning') && local.type === stored.type) {
-    return normalizedText(stored.text) === normalizedText(local.text)
-  }
+  parts.forEach((part, index) => {
+    const key = assistantPartOccurrence(part)
 
-  return false
+    if (key !== undefined) {
+      positions.set(key, positions.has(key) ? -1 : index)
+    }
+  })
+
+  return positions
 }
 
-/** Subtract an ordered, tool-anchored prefix within an already matched user
- * interval. Hydration can fold several live bubbles into one durable row;
- * bubble ordinals and equal text alone cannot establish that coverage. */
+/** A partial live fold can start after earlier durable tool rounds. */
+function coveredPrefixOffset(stored: ChatMessagePart[], local: ChatMessage[]): number {
+  const boundary = local.findIndex(message => message.role !== 'assistant' || message.error)
+  const localParts = (boundary < 0 ? local : local.slice(0, boundary)).flatMap(message => message.parts)
+  const storedPositions = uniqueOccurrences(stored)
+  const offsets = new Set<number>()
+
+  for (const [key, index] of uniqueOccurrences(localParts)) {
+    const storedIndex = storedPositions.get(key)
+
+    if (index >= 0 && storedIndex !== undefined && storedIndex >= index) {
+      offsets.add(storedIndex - index)
+    }
+  }
+
+  return offsets.size === 1 ? offsets.values().next().value! : -1
+}
+
+/** Subtract an ordered, occurrence-anchored prefix within an already matched
+ * user interval. Equal prose alone cannot establish coverage. */
 export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: ChatMessage[]): ChatMessage[] {
   const parts = stored.flatMap(message => (message.role === 'assistant' ? message.parts : []))
-  let cursor = 0
+  let cursor = coveredPrefixOffset(parts, local)
+
+  if (cursor < 0) {
+    return local
+  }
+
   let anchored = false
   let stopped = false
   const remaining: ChatMessage[] = []
@@ -34,11 +58,11 @@ export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: Chat
     let consumed = 0
 
     for (const part of message.parts) {
-      if (!parts[cursor] || !sameOccurrencePart(parts[cursor], part)) {
+      if (!parts[cursor] || !assistantPartCovered(parts[cursor], part)) {
         break
       }
 
-      anchored ||= part.type === 'tool-call'
+      anchored ||= assistantPartOccurrence(part) !== undefined
       cursor += 1
       consumed += 1
     }
@@ -49,7 +73,5 @@ export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: Chat
     }
   }
 
-  // A coincidentally equal paragraph, without the same tool occurrence after
-  // it, is insufficient evidence to remove anything.
   return anchored ? remaining : local
 }
