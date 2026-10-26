@@ -46,36 +46,26 @@ def user_display_index_current(conn):
 
 
 def repair_user_display_slice(db, conn, lower, upper):
-    """Repair derived USER index columns only; seek first compatible peer by the UID index."""
-    fields = ("id, role, content, message_uid, display_kind, display_metadata, "
-              "_compressed_summary, display_order, display_identity")
-    rows = conn.execute(f"SELECT {fields} FROM messages WHERE id > ? AND id <= ? "
-                        "AND role = 'user' AND message_uid IS NOT NULL "
-                        "AND (active = 1 OR compacted = 1) ORDER BY id", (lower, upper)).fetchall()
+    """Repair a rowid-bounded slice without changing canonical messages or folding tool payloads by UID."""
+    rows = conn.execute("SELECT rowid AS _physical_id, * FROM messages WHERE rowid > ? AND rowid <= ? "
+                        "AND (active = 1 OR compacted = 1) ORDER BY rowid", (lower, upper)).fetchall()
     for row in rows:
-        key = authored_user_occurrence(db, row)
-        if key is None:
-            continue
-        first = conn.execute(f"SELECT {fields} FROM messages INDEXED BY idx_messages_display_uid "
-                             "WHERE session_id = (SELECT session_id FROM messages WHERE id = ?) "
-                             "AND message_uid = ? AND role = 'user' "
-                             "AND (active = 1 OR compacted = 1) ORDER BY id",
-                             (row["id"], row["message_uid"]))
-        try:
-            order = next(peer["id"] for peer in first if authored_user_occurrence(db, peer) == key)
-        finally:
-            first.close()
-        identity = db._display_identity(key)
-        if (row["display_order"], row["display_identity"]) != (order, identity):
-            conn.execute("UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?",
-                         (order, identity, row["id"]))
-
-
-def legacy_user_display_group(db, row, indexed):
-    """Correct authored users only; populated legacy non-user slots are authoritative."""
-    if indexed and authored_user_occurrence(db, row) is None:
-        return ("display-slot", row["display_order"]), row["display_order"]
-    return db._display_identity(db._display_dedupe_key(row)), row["id"]
+        identity = _display_row_identity(db, conn, row)
+        order = row["display_order"] if row["display_identity"] == identity else row["_physical_id"]
+        peers = conn.execute(
+            "SELECT rowid AS _physical_id, * FROM messages WHERE session_id = ? AND message_uid = ? "
+            "AND (active = 1 OR compacted = 1) ORDER BY rowid", (row["session_id"], row["message_uid"]),
+        ).fetchall() if row["message_uid"] else []
+        peers.extend(conn.execute(
+            "SELECT rowid AS _physical_id, * FROM messages WHERE session_id = ? AND display_identity = ? "
+            "AND (active = 1 OR compacted = 1)", (row["session_id"], identity),
+        ).fetchall())
+        compatible = [peer for peer in peers if _display_row_identity(db, conn, peer) == identity]
+        orders = [peer["display_order"] if peer["display_identity"] == identity else peer["_physical_id"]
+                  for peer in compatible]
+        order = min([row["_physical_id"] if order is None else order] + [v for v in orders if v is not None])
+        conn.execute("UPDATE messages SET display_order = ?, display_identity = ? WHERE rowid = ?",
+                     (order, identity, row["_physical_id"]))
 
 
 def _display_row_identity(db, conn, row):

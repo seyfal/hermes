@@ -9,7 +9,7 @@ from agent.compaction_display import project_compaction_message_for_display
 from agent.context_compressor import user_originated_turn_view
 from hermes_state_compaction_display import not_a_later_tool_copy_sql
 from hermes_state_messages import DISPLAY_VISIBLE_SQL
-from hermes_state_identity import authored_user_occurrence, user_display_index_current
+from hermes_state_identity import user_display_index_current
 
 
 _SYNTHETIC_PROMPT = re.compile(
@@ -76,53 +76,22 @@ def _display_rows_sql(conn, session_id, *, users_only=False):
             FROM messages m WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}{not_a_later_tool_copy_sql('m')}
             GROUP BY m.display_order
         )"""
-    uid = "message_uid" if any(r[1] == "message_uid" for r in conn.execute("PRAGMA table_info(messages)")) else "NULL"
-    # Preserve the old populated index's non-user history while correcting users.
-    if indexed:
-        return f"""WITH keyed AS (
-            SELECT *, timeline_user_occurrence(role, content, {uid}, display_kind,
-                       display_metadata, _compressed_summary) AS user_occurrence
-            FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
-        ), ranked AS (
-            SELECT id, MIN(CASE WHEN user_occurrence IS NULL THEN display_order ELSE id END)
-                           OVER identity AS sort_id,
-                   ROW_NUMBER() OVER (identity ORDER BY active DESC, id DESC) AS preference
-            FROM keyed WINDOW identity AS (PARTITION BY user_occurrence,
-                CASE WHEN user_occurrence IS NULL THEN display_order END)
-        ), display_rows AS (SELECT id AS row_id, sort_id FROM ranked WHERE preference = 1)"""
-    return f"""WITH keyed AS (
-        SELECT *, timeline_user_occurrence(role, content, {uid}, display_kind,
-                   display_metadata, _compressed_summary) AS user_occurrence
-        FROM messages WHERE session_id = :sid AND (active = 1 OR compacted = 1){filters}
-    ), ranked AS (
-        SELECT id, MIN(id) OVER identity AS sort_id,
-               ROW_NUMBER() OVER (identity ORDER BY active DESC, id DESC) AS preference
-        FROM keyed
-        WINDOW identity AS (PARTITION BY role,
-            user_occurrence,
-            CASE WHEN user_occurrence IS NOT NULL THEN NULL
-                 WHEN role = 'user' THEN timeline_identity_content(content, display_kind) ELSE content END,
-            CASE WHEN user_occurrence IS NULL THEN timestamp END,
-            CASE WHEN user_occurrence IS NULL THEN tool_call_id END,
-            CASE WHEN user_occurrence IS NULL THEN tool_calls END,
-            CASE WHEN user_occurrence IS NULL THEN tool_name END)
-    ), display_rows AS (SELECT id AS row_id, sort_id FROM ranked WHERE preference = 1)"""
+    return """WITH display_rows AS (
+        SELECT json_extract(value, '$[0]') AS row_id, json_extract(value, '$[1]') AS sort_id
+        FROM json_each(:projection)
+    )"""
+
+
+def _projection_params(db, conn, session_id, sql):
+    if ":projection" not in sql:
+        return {}
+    import json
+    from hermes_state_display import legacy_projection
+    rows = legacy_projection(db, conn, session_id, " AND (active = 1 OR compacted = 1)")
+    return {"projection": json.dumps([(row_id, order, identity.hex()) for row_id, order, identity in rows])}
 
 
 def _register_functions(db, conn):
-    from agent.context_compressor import split_user_originated_turn
-
-    def identity_content(content, display_kind):
-        handoff, live = split_user_originated_turn({
-            "role": "user", "content": db._decode_content(content), "display_kind": display_kind})
-        return db._encode_content(live.get("content")) if handoff is not None and live is not None else content
-
-    conn.create_function("timeline_identity_content", 2, identity_content, deterministic=True)
-    def occurrence(role, content, uid, kind, meta, summary):
-        key = authored_user_occurrence(db, {"role": role, "content": content, "message_uid": uid,
-            "display_kind": kind, "display_metadata": meta, "_compressed_summary": summary})
-        return repr(key) if key is not None else None
-    conn.create_function("timeline_user_occurrence", 6, occurrence, deterministic=True)
     conn.create_function("timeline_preview", 3,
                          lambda content, kind, summary: _prompt_preview(db, content, kind, summary),
                          deterministic=True)
@@ -144,7 +113,8 @@ def get_session_messages_around(db, session_id, row_id, *, limit=120):
         if anchor is None or not _prompt_preview(db, *anchor):
             return None
         sql = _display_rows_sql(conn, session_id)
-        params = {"sid": session_id, "row_id": row_id, "limit": limit}
+        params = {"sid": session_id, "row_id": row_id, "limit": limit,
+                  **_projection_params(db, conn, session_id, sql)}
         selected = conn.execute(sql + """
             SELECT sort_id FROM display_rows WHERE row_id = :row_id
         """, params).fetchone()
@@ -159,7 +129,13 @@ def get_session_messages_around(db, session_id, row_id, *, limit=120):
                             WHERE sort_id >= :start ORDER BY sort_id LIMIT :limit) AS page
             JOIN messages m ON m.id = page.row_id ORDER BY page.sort_id
         """, params).fetchall()
-    messages = [db._row_to_message_dict(row, warn_context="timeline jump", summary_flag=True) for row in rows]
+        if "projection" in params:
+            import json
+            addresses = {row_id: (order, bytes.fromhex(identity))
+                         for row_id, order, identity in json.loads(params["projection"])}
+            rows = [dict(row, display_order=addresses[row["id"]][0],
+                         display_identity=addresses[row["id"]][1]) for row in rows]
+    messages = [db._row_to_message_dict(row, warn_context="timeline jump", summary_flag=True, display_address=True) for row in rows]
     return {"messages": messages, "pagination": {
         "row_id": row_id, "limit": limit, "returned": len(messages), "order": "oldest",
         "offset": counts["offset"], "total": counts["total"],
@@ -176,10 +152,11 @@ def get_session_timeline(db, session_id, *, limit=500, after_row_id=0):
             prompts AS MATERIALIZED (
                 SELECT row_id, sort_id, m.timestamp,
                        timeline_preview(m.content, m.display_kind, m._compressed_summary) AS preview
-                FROM display_rows JOIN messages m ON m.id = row_id
+                FROM display_rows JOIN messages m ON m.id = row_id WHERE m.role = 'user'
             ), eligible AS MATERIALIZED (SELECT * FROM prompts WHERE preview <> '')
         """
-        params = {"sid": session_id, "after": after_row_id, "limit": limit + 1}
+        params = {"sid": session_id, "after": after_row_id, "limit": limit + 1,
+                  **_projection_params(db, conn, session_id, sql)}
         rows = conn.execute(sql + """
             SELECT row_id, sort_id, timestamp, preview, (SELECT COUNT(*) FROM eligible) AS total
             FROM eligible WHERE sort_id > :after ORDER BY sort_id LIMIT :limit

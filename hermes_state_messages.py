@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -25,9 +25,9 @@ from hermes_state_common import (
 from hermes_state_compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
-from hermes_state_display import restore_dirty_display_rows
+from hermes_state_display import display_page, restore_dirty_display_rows
 from hermes_state_identity import (
-    authored_user_occurrence, legacy_user_display_group, user_display_index_current,
+    authored_user_occurrence, user_display_index_current,
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
@@ -1262,59 +1262,26 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
 
     def _legacy_display_page(self, session_id: str, *, active_clause: str, limit: Optional[int], offset: int,
                              latest: bool, count_only: bool = False):
-        """Project a legacy read-only display page without retaining transcript payloads."""
-        representatives: dict[Any, tuple[int, int, int]] = {}
+        """Project a legacy snapshot before pagination, sharing the timeline's grouping rules."""
+        from hermes_state_display import legacy_page
         with self._read_ctx() as conn:
-            columns = set(self._message_column_names(conn))
             conn.execute("BEGIN")
             try:
-                indexed = {"display_order", "display_identity"} <= columns and conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone() is None
-                order_column = "display_order" if "display_order" in columns else "NULL AS display_order"
-                has_session_index = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
-                    ("idx_messages_session_id",),
-                ).fetchone() is not None
-                index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
-                rows = conn.execute(
-                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
-                    f"display_kind, display_metadata, _compressed_summary, {order_column}, "
-                    f"{'message_uid' if 'message_uid' in columns else 'NULL AS message_uid'} "
-                    f"FROM messages {index_hint} "
-                    f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
-                    (session_id,))
-                for row in rows:
-                    if self._is_model_only_row(row):
-                        continue
-                    identity, order = legacy_user_display_group(self, row, indexed)
-                    current = representatives.get(identity)
-                    candidate = (row["active"], row["id"])
-                    if current is None or candidate > current[:2]:
-                        representatives[identity] = (*candidate, current[2] if current else order)
-                rows.close()
-
-                identities = sorted(representatives, key=lambda key: representatives[key][2])
-                if count_only:
-                    return len(identities)
-                identities = identities[::-1][offset:][:limit][::-1] if latest else identities[offset:][:limit]
-                selected_ids = [representatives[identity][1] for identity in identities]
-                selected = {}
-                for start in range(0, len(selected_ids), 900):
-                    chunk = selected_ids[start:start + 900]
-                    selected.update({row["id"]: row for row in conn.execute(
-                        f"SELECT * FROM messages WHERE session_id = ?{active_clause} "
-                        f"AND id IN ({_placeholders(chunk)})",
-                        (session_id, *chunk))})
-                return [selected[row_id] for row_id in selected_ids if row_id in selected]
+                return legacy_page(self, conn, session_id, active_clause=active_clause,
+                                   limit=limit, offset=offset, latest=latest, count_only=count_only)
             finally:
                 if conn.in_transaction:
                     conn.execute("ROLLBACK")
 
-    def _row_to_message_dict(self, row, *, warn_context: str, summary_flag: bool) -> dict[str, Any]:
+    def _row_to_message_dict(self, row, *, warn_context: str, summary_flag: bool, display_address: bool = False) -> dict[str, Any]:
         """``dict(row)`` with content/tool_calls/display_metadata decoded; *summary_flag* keeps
         ``_compressed_summary`` only as ``True``."""
         msg = dict(row)
-        msg.pop("display_identity", None)
-        msg.pop("display_order", None)
+        identity = msg.pop("display_identity", None)
+        if display_address and isinstance(identity, bytes):
+            msg["display_identity"] = identity.hex()
+        if not display_address:
+            msg.pop("display_order", None)
         if summary_flag and msg.pop("_compressed_summary", 0):
             msg["_compressed_summary"] = True
         msg["content"] = self._decode_content(msg["content"])
@@ -1358,13 +1325,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         ).fetchall()
 
     def display_message_count(self, session_id: str) -> int:
-        """Count authored occurrences and unchanged non-user display groups."""
-        if not self._ensure_display_order(session_id):
-            return cast(int, self._legacy_display_page(session_id, active_clause=_DISPLAY_ACTIVE_CLAUSE, limit=0, offset=0, latest=False, count_only=True))
-        row = self._read_one(
-            "SELECT COUNT(*) FROM (SELECT DISTINCT display_order FROM messages WHERE session_id = ?"
-            f"{_DISPLAY_ACTIVE_CLAUSE}{DISPLAY_VISIBLE_SQL}{not_a_later_tool_copy_sql('messages')})", (session_id,))
-        return int(row[0])
+        """Count the same display snapshot the paginated reader projects."""
+        self._ensure_display_order(session_id)
+        return self._read_retrying_ioerr(lambda conn: display_page(self, conn, session_id, count_only=True))
 
     def _display_messages_from_conn(self, conn, session_id: str) -> Optional[list[dict[str, Any]]]:
         """Exact display snapshot on an already-held transaction; None means fail closed."""
@@ -1373,7 +1336,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         if not user_display_index_current(conn) or conn.execute(_DISPLAY_INDEX_MISSING_SQL, (session_id,)).fetchone():
             return None
         return [
-            self._row_to_message_dict(row, warn_context="verified delete", summary_flag=True)
+            self._row_to_message_dict(row, warn_context="verified delete", summary_flag=True, display_address=True)
             for row in self._display_rows_from_conn(conn, session_id)
         ]
 
@@ -1414,8 +1377,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         elif include_compacted and not include_inactive and self._ensure_display_order(session_id):
             # _read_retrying_ioerr: mode=ro pooled readers see a transient IOERR mid-checkpoint (#100871).
             rows = self._read_retrying_ioerr(
-                lambda conn: self._display_rows_from_conn(
-                    conn, session_id, limit=limit, offset=offset, latest=latest))
+                lambda conn: display_page(
+                    self, conn, session_id, limit=limit, offset=offset, latest=latest))
         elif include_compacted:
             # Read-only legacy stores cannot persist display identities; keep only fixed-width
             # identities and representative ids while scanning, then fetch the selected payloads.
@@ -1432,7 +1395,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             rows = self._read_all(sql, params)
             if latest:
                 rows.reverse()
-        return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
+        return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True,
+                                         display_address=include_compacted and not include_inactive) for row in rows]
 
     def find_pr_url_messages(self, session_ids: list[str]) -> list[dict[str, Any]]:
         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""
@@ -1562,19 +1526,19 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         return (tuple(ids), int(row[0]), int(row[1]), int(row[2]))
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> tuple[bool, Any]:
-        """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation
-        column-clones the concurrent tail into the child, so copies need not be adjacent: the exact
-        ``(timestamp, canonical content)`` clone index is checked first, then the adjacent heuristic. A
-        rotated child carrier wins over the ancestor copy."""
+        """Fold one lineage user clone, preferring the child carrier. Addressed authored turns compare by
+        UID and authority. Only unaddressed legacy turns use timestamp/content and adjacency heuristics."""
+        occurrence = authored_user_occurrence(self, {"display_kind": None, "display_metadata": None, **msg})
         canonical_content = self._canonical_replayed_user_content(msg)[0]
-        exact_clone_key = self._exact_replayed_user_clone_key(msg.get("timestamp"), canonical_content)
+        exact_clone_key = ((occurrence, "") if occurrence is not None else
+                           self._exact_replayed_user_clone_key(msg.get("timestamp"), canonical_content))
         previous_exact = exact_user_clones.get(exact_clone_key) if exact_clone_key is not None else None
         duplicate = None
         if previous_exact is not None:
             previous_index = next((i for i, candidate in enumerate(messages) if candidate is previous_exact), None)
             if previous_index is not None:
                 duplicate = (previous_index, True)
-        if duplicate is None:
+        if duplicate is None and occurrence is None:
             duplicate = self._find_duplicate_replayed_user_message(messages, msg)
         if duplicate is None:
             return False, exact_clone_key
