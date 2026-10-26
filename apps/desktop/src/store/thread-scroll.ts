@@ -90,10 +90,17 @@ export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean; se
 // Cross-component bridge: the jump button lives by the composer, the viewport's
 // `scrollToBottom` lives inside the thread. The bridge registers a handler; the
 // button fires it. Mirrors the composer focus/insert emitter pattern.
-const handlers = new Map<string | null, Set<() => void>>()
+export interface ThreadScrollRequest {
+  onlyIfFollowing?: boolean
+}
 
-export const onScrollToBottomRequest = (handler: () => void, sessionId: string | null = null) => {
-  const scoped = handlers.get(sessionId) ?? new Set<() => void>()
+const handlers = new Map<string | null, Set<(request: ThreadScrollRequest) => void>>()
+
+export const onScrollToBottomRequest = (
+  handler: (request: ThreadScrollRequest) => void,
+  sessionId: string | null = null
+) => {
+  const scoped = handlers.get(sessionId) ?? new Set<(request: ThreadScrollRequest) => void>()
 
   scoped.add(handler)
   handlers.set(sessionId, scoped)
@@ -107,8 +114,8 @@ export const onScrollToBottomRequest = (handler: () => void, sessionId: string |
   }
 }
 
-export const requestScrollToBottom = (sessionId: string | null = null) => {
-  handlers.get(sessionId)?.forEach(handler => handler())
+export const requestScrollToBottom = (sessionId: string | null = null, request: ThreadScrollRequest = {}) => {
+  handlers.get(sessionId)?.forEach(handler => handler(request))
 }
 
 export type ThreadPageDirection = -1 | 1
@@ -219,6 +226,7 @@ export function threadScrollTargetTop(
 // clearance spacer, so composer-only layout is distinguishable from real
 // message/prepend/streaming growth.
 export type ThreadScrollRestoreResizeMetrics = {
+  anchorTop?: number
   clearanceHeight: number
   clientHeight: number
   scrollHeight: number
@@ -254,8 +262,8 @@ export function threadScrollTranscriptHeight(
 export function shouldReapplyFrozenThreadScrollOffset(
   target: ThreadScrollState,
   settled: boolean,
-  previous: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>,
-  next: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
+  previous: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight' | 'anchorTop'>,
+  next: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight' | 'anchorTop'>
 ): boolean {
   if (!settled) {
     return false
@@ -265,7 +273,9 @@ export function shouldReapplyFrozenThreadScrollOffset(
   const after = Math.round(threadScrollTranscriptHeight(next))
 
   // A bottom target follows growth only — a shrink is clamped by the browser.
-  return target.kind === 'bottom' ? after > before : after !== before
+  return target.kind === 'bottom'
+    ? after > before
+    : previous.anchorTop !== undefined && next.anchorTop !== undefined && previous.anchorTop !== next.anchorTop
 }
 
 // Storage is scoped per profile with the same `.profile.<encoded>` suffix the
