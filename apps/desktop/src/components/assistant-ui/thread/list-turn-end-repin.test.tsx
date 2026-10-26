@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { setActiveProfile } from '@/store/profile'
-import { saveThreadScrollPosition } from '@/store/thread-scroll'
+import { getThreadScrollPosition, saveThreadScrollPosition } from '@/store/thread-scroll'
 
 import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
 
@@ -176,6 +176,8 @@ describe('list turn-end scroll re-pin', () => {
         vp.dispatchEvent(new Event('scroll'))
       })
       await settleScroll(3)
+      act(() => window.dispatchEvent(new Event('beforeunload')))
+      expect(getThreadScrollPosition('small-escape')).toEqual({ kind: 'offset', fromBottom: 4 })
       view.rerender(<TurnEndHarness isRunning={false} messages={messages} sessionKey="small-escape" />)
       scrollHeightValue += 300
       deliverContentResize()

@@ -52,7 +52,7 @@ import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
-import { useThreadScrollMetrics } from './use-thread-scroll-metrics'
+import { isAtThreadBottom, useThreadScrollMetrics } from './use-thread-scroll-metrics'
 import { useThreadScrollOwner } from './use-thread-scroll-owner'
 import { useTimelineReveal } from './use-timeline-reveal'
 
@@ -1145,7 +1145,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // yank a view the user had moved away from the bottom back down.
       if (!loadSettledRef.current || shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)) {
         applyTarget(el)
-        liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+        liveScrollStateRef.current = threadScrollStateFromMetrics(el, 1)
         lastRestoreMetrics = restoreResizeMetrics()
       }
     })
@@ -1169,7 +1169,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // Input wins even at a clamped top, where no scroll event fires.
       stopScroll()
       loadSettledRef.current = true
-      liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+      liveScrollStateRef.current = threadScrollStateFromMetrics(el, 1)
     }
 
     cancelRestoreRef.current = target.kind === 'offset' ? cancelRestore : () => resizeObserver.disconnect()
@@ -1400,7 +1400,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
         // A no-op PageDown at the bottom must not escape sticky follow: the
         // browser will clamp the write and emit no scroll event to re-lock it.
-        if (direction > 0 && threadScrollStateFromMetrics(el).kind === 'bottom') {
+        if (direction > 0 && isAtThreadBottom(el)) {
           return
         }
 

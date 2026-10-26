@@ -57,7 +57,7 @@ export function useThreadScrollMetrics({
 
       previous = next
       previousTop = el.scrollTop
-      liveState.current = threadScrollStateFromMetrics(el)
+      liveState.current = following.current ? THREAD_SCROLL_BOTTOM : threadScrollStateFromMetrics(el, 1)
     }
 
     const onResize = () => {
@@ -73,7 +73,7 @@ export function useThreadScrollMetrics({
 
       previous = next
       previousTop = el.scrollTop
-      liveState.current = threadScrollStateFromMetrics(el)
+      liveState.current = following.current ? THREAD_SCROLL_BOTTOM : threadScrollStateFromMetrics(el, 1)
     }
 
     el.addEventListener('scroll', update, { passive: true })
