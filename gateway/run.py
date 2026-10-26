@@ -1125,8 +1125,7 @@ def _build_replay_entry(
 
     The durable ``timestamp`` is kept (the wire sanitizers strip it): it is part of the row's display identity,
     so a compaction copy written from a timestamp-less replay dict lands in its own display slot and the
-    message renders twice (#123985). Falsy fields are dropped EXCEPT ``reasoning_content``: DeepSeek/Kimi
-    treat "" as a sentinel; dropping it can 400.
+    message renders twice (#123985).
 
     Empty values: most fields are dropped when falsy (matching the original PR #2974 behaviour) since an
     empty list/string for those carries no information. The exception is ``reasoning_content``:
@@ -1153,7 +1152,7 @@ def _build_replay_entry(
             if (_rval is None) if _rkey == "reasoning_content" else (not _rval):
                 continue
             entry[_rkey] = _rval
-    if msg.get("timestamp"):
+    if msg.get("timestamp") is not None:
         entry["timestamp"] = msg["timestamp"]
     entry.update(scaffolding_replay_fields(msg))  # a proactive prune re-persists this view: keep the flags
     # Replay rebuilds the SAME conversation: every role keeps its uid and merge witness, so a context engine sees the
