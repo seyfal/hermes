@@ -46,6 +46,7 @@ import { isSecondaryWindow } from '@/store/windows'
 import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
+import { captureReadingAnchor, type ReadingAnchor, readingAnchorTop, restoreReadingAnchor } from './list_reading_anchor'
 import { responseMessageRole, ResponseMessages } from './response-group'
 import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
@@ -620,6 +621,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // store a commit later); consuming the anchor there spends it as a no-op and
   // leaves the real prepend unanchored. Only a taller tree is the prepend.
   const anchorHeightRef = useRef<number | null>(null)
+  const prependAnchorRef = useRef<ReadingAnchor | null>(null)
   // False from a session switch until the settle loop below parks the
   // transcript at its true bottom. While false, scrollTop is a way-point of a
   // load in progress, not a reading position anyone chose — never anchor to it.
@@ -667,6 +669,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     restoreFromBottomRef.current =
       liveScrollStateRef.current.kind === 'bottom' ? el.clientHeight : el.scrollHeight - el.scrollTop
     anchorHeightRef.current = el.scrollHeight
+    prependAnchorRef.current = liveScrollStateRef.current.kind === 'offset' ? captureReadingAnchor(el) : null
   }, [scrollRef])
 
   // Weights (part count + visible character cost) fold into the BUDGET only.
@@ -1089,17 +1092,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // event it fires is recognised as ours below and cannot cancel the restore.
     let ownScrollTop: number | null = null
 
+    let readingAnchor: ReadingAnchor | null = null
     const applyTarget = (node: HTMLElement) => {
-      node.scrollTop = threadScrollTargetTop(target, node)
+      if (loadSettledRef.current && target.kind === 'offset') {
+        restoreReadingAnchor(node, readingAnchor)
+      } else {
+        node.scrollTop = threadScrollTargetTop(target, node)
+      }
+
       ownScrollTop = node.scrollTop
+      readingAnchor = captureReadingAnchor(node)
     }
 
     applyRestoreRef.current = () => {
       applyTarget(el)
     }
 
-    applyRestoreRef.current()
     loadSettledRef.current = false
+    applyRestoreRef.current()
     // The rows are in and about to be glued to their target: theme CSS may
     // hide this phase (data-session-switching) so the jump never paints.
     const releaseSwitching = holdSessionSwitching(el)
@@ -1175,7 +1185,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // restored target through those resizes until input or a live run takes over.
     // Bottom needs the same protection: the library follows on the next frame,
     // but a switch in this frame would otherwise persist the temporary gap.
-    const restoreResizeMetrics = () => readThreadScrollResizeMetrics(el, clearanceRef.current)
+    const restoreResizeMetrics = () => ({
+      ...readThreadScrollResizeMetrics(el, clearanceRef.current),
+      anchorTop: readingAnchorTop(el, readingAnchor)
+    })
 
     let lastRestoreMetrics = restoreResizeMetrics()
 
@@ -1192,6 +1205,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       if (!loadSettledRef.current || shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)) {
         applyTarget(el)
         liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+        lastRestoreMetrics = restoreResizeMetrics()
       }
     })
 
@@ -1202,6 +1216,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const cancelRestore = () => {
       applyRestoreRef.current = null
       restoreFromBottomRef.current = null
+      prependAnchorRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
       releaseSwitching()
@@ -1517,7 +1532,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.scrollHeight > (anchorHeightRef.current ?? 0) &&
       el.scrollHeight >= restoreFromBottom
     ) {
-      el.scrollTop = el.scrollHeight - restoreFromBottom
+      if (!restoreReadingAnchor(el, prependAnchorRef.current)) {
+        // A parked load has no visible occurrence yet. Its saved offset is
+        // still the target until enough history arrives.
+        if (!loadSettledRef.current || liveScrollStateRef.current.kind === 'bottom') {
+          el.scrollTop = el.scrollHeight - restoreFromBottom
+        }
+      }
+
+      prependAnchorRef.current = null
       restoreFromBottomRef.current = null
       // Consuming a parked offset (clamped-exit) means the view just landed at
       // its real reading position — the load is settled from here on.
