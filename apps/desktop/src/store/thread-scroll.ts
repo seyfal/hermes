@@ -90,10 +90,17 @@ export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean; se
 // Cross-component bridge: the jump button lives by the composer, the viewport's
 // `scrollToBottom` lives inside the thread. The bridge registers a handler; the
 // button fires it. Mirrors the composer focus/insert emitter pattern.
-const handlers = new Map<string | null, Set<() => void>>()
+export interface ThreadScrollRequest {
+  onlyIfFollowing?: boolean
+}
 
-export const onScrollToBottomRequest = (handler: () => void, sessionId: string | null = null) => {
-  const scoped = handlers.get(sessionId) ?? new Set<() => void>()
+const handlers = new Map<string | null, Set<(request: ThreadScrollRequest) => void>>()
+
+export const onScrollToBottomRequest = (
+  handler: (request: ThreadScrollRequest) => void,
+  sessionId: string | null = null
+) => {
+  const scoped = handlers.get(sessionId) ?? new Set<(request: ThreadScrollRequest) => void>()
 
   scoped.add(handler)
   handlers.set(sessionId, scoped)
@@ -107,8 +114,8 @@ export const onScrollToBottomRequest = (handler: () => void, sessionId: string |
   }
 }
 
-export const requestScrollToBottom = (sessionId: string | null = null) => {
-  handlers.get(sessionId)?.forEach(handler => handler())
+export const requestScrollToBottom = (sessionId: string | null = null, request: ThreadScrollRequest = {}) => {
+  handlers.get(sessionId)?.forEach(handler => handler(request))
 }
 
 export type ThreadPageDirection = -1 | 1

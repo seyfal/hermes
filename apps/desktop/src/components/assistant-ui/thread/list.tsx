@@ -826,7 +826,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(
     () =>
-      onScrollToBottomRequest(() => {
+      onScrollToBottomRequest(({ onlyIfFollowing }) => {
+        if (!paneVisible || (onlyIfFollowing && (!followingRef.current || isHistorical))) {
+          return
+        }
+
         if (isHistorical) {
           returnToLatest?.()
         }
@@ -837,7 +841,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           void scrollToBottomUnlessSelecting()
         }
       }, scrollSessionId),
-    [scrollToBottomUnlessSelecting, scrollSessionId, isHistorical, returnToLatest]
+    [followingRef, paneVisible, scrollToBottomUnlessSelecting, scrollSessionId, isHistorical, returnToLatest]
   )
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
