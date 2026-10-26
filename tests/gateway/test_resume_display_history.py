@@ -50,8 +50,8 @@ def _append(db, sid, *texts):
 
 
 def _compact(db, physical, mode):
-    compacted = [{'role': 'user', 'content': SUMMARY}, {'role': 'user', 'content': 'TAIL_Q'},
-                 {'role': 'assistant', 'content': 'TAIL_A'}]
+    compacted = [{'role': 'user', 'content': SUMMARY},
+                 *db.get_messages_as_conversation(physical)[-2:]]
     if mode == 'in_place':
         db.archive_and_compact(physical, compacted, tail_count=2)
         return physical
