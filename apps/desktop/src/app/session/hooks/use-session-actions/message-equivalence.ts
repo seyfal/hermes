@@ -24,6 +24,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  'displayIdentity',
   'persistedTurn',
   'durableComplete',
   'recovered',
@@ -76,13 +77,20 @@ const HANDLED_PART_TYPES = [
 // conservative compare (occasionally false-negative → one extra idempotent
 // setMessages) is safe, but a false-POSITIVE (claiming equal when different)
 // would skip a needed update.
+function sameSourceIdentities(a: string[] = [], b: string[] = []): boolean {
+  return a.length === b.length && a.every((identity, index) => identity === b[index])
+}
+
 export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: ChatMessage['parts'][number]): boolean {
   // Reference equality fast-path
   if (aPart === bPart) {
     return true
   }
 
-  if (aPart.type !== bPart.type) {
+  if (
+    aPart.type !== bPart.type ||
+    !sameSourceIdentities(aPart.sourceDisplayIdentities, bPart.sourceDisplayIdentities)
+  ) {
     return false
   }
 
@@ -152,25 +160,30 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
   )
 }
 
+const SCALAR_FIELDS = [
+  'id',
+  'rowId',
+  'displayIdentity',
+  'role',
+  'durableComplete',
+  'recovered',
+  'pending',
+  'error',
+  'hidden',
+  'branchGroupId',
+  'timestamp',
+  'completedAt'
+] as const
+
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
-    a.id !== b.id ||
-    a.rowId !== b.rowId ||
+    SCALAR_FIELDS.some(field => a[field] !== b[field]) ||
     !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
-    a.role !== b.role ||
-    a.durableComplete !== b.durableComplete ||
-    a.recovered !== b.recovered ||
-    a.pending !== b.pending ||
-    a.error !== b.error ||
     // Structural compare — the descriptor arrives as a fresh object per
     // resume/replay, so identity comparison would repaint forever.
     (a.errorSurface?.layer ?? null) !== (b.errorSurface?.layer ?? null) ||
     (a.errorSurface?.code ?? null) !== (b.errorSurface?.code ?? null) ||
     (a.errorSurface?.retryable ?? null) !== (b.errorSurface?.retryable ?? null) ||
-    a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId ||
-    a.timestamp !== b.timestamp ||
-    a.completedAt !== b.completedAt ||
     // Interim gates the action footer, so flipping it must repaint (e.g. a
     // previewed final settling onto a sealed interim bubble restores the bar).
     (a.interim ?? false) !== (b.interim ?? false) ||

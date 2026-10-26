@@ -16,6 +16,10 @@
  */
 
 import {
+  mergeProvenancePage,
+  sharesTranscriptSource
+} from '@/app/chat/transcript-backfill-provenance'
+import {
   dropPageFoldsCutByTheBoundary,
   dropPageRowsOfStoppedTurns,
   dropReceiptTurnsThePageHolds
@@ -23,6 +27,7 @@ import {
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { messageDisplayIdentities } from '@/lib/chat-messages/display-identity'
 import {
   recordTranscriptBackfillPage,
   tailStateFromPage,
@@ -97,6 +102,13 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
   // paint the older page as the whole conversation.
   if (existing.length === 0 || olderPage.length === 0) {
     return existing
+  }
+
+  if (
+    existing.some(message => messageDisplayIdentities(message).length) &&
+    olderPage.some(message => messageDisplayIdentities(message).length)
+  ) {
+    return mergeProvenancePage(existing, olderPage, true)
   }
 
   const existingRowIndices = new Map<number, number>()
@@ -200,16 +212,19 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
  * Re-anchor a refreshed TAIL onto a transcript that has backfilled older
  * pages. Background refreshes and post-turn rehydrates re-read only the
  * newest page; replacing the store with that page outright would silently
- * drop everything "Show earlier" already loaded. Find where the refreshed
- * tail begins inside the previous transcript and keep the older prefix when
- * that prefix is actually earlier. An anchor on the first on-screen row is a
- * real match: the page replaces the window from there. A page that already
- * contains every on-screen row replaces the window. When the page overlaps
- * the screen but that splice would put an older stored id after a newer one,
- * merge by stored id. The fresh page wins where both sides share an id, and
- * a row with no stored id stays at the end. A page that shares no stored id
- * is the transcript now on screen — a compaction rewrite or a different
- * session — and replaces the window.
+ * drop everything "Show earlier" already loaded. When both sides carry
+ * display identities, the page merges by those occurrences in the server's
+ * array order (physical representatives are not chronological after
+ * compaction). Otherwise find where the refreshed tail begins inside the
+ * previous transcript and keep the older prefix when that prefix is actually
+ * earlier. An anchor on the first on-screen row is a real match: the page
+ * replaces the window from there. A page that already contains every
+ * on-screen row replaces the window. When the page overlaps the screen but
+ * that splice would put an older stored id after a newer one, merge by stored
+ * id. The fresh page wins where both sides share an id, and a row with no
+ * stored id stays at the end. A page that shares no stored id is the
+ * transcript now on screen — a compaction rewrite or a different session —
+ * and replaces the window.
  */
 function pageCoversWindow(previous: ChatMessage[], refreshedIds: Set<string>, refreshedRowIds: Set<number>): boolean {
   return previous.every(
@@ -222,7 +237,7 @@ function durableRowIds(messages: ChatMessage[]): Set<number> {
 }
 
 /** A text-only refresh can omit the live tool bubble after the turn settles. */
-function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+function retainLocalTurnParts(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
   const previousFinalIndex = previous.findLastIndex(
     message => message.role === 'assistant' && message.rowId !== undefined && Boolean(chatMessageText(message).trim())
   )
@@ -414,6 +429,13 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     return refreshedTail
   }
 
+  if (
+    refreshedTail.some(message => messageDisplayIdentities(message).length) &&
+    previous.some(message => messageDisplayIdentities(message).length)
+  ) {
+    return retainLocalTurnParts(mergeProvenancePage(refreshedTail, previous), previous)
+  }
+
   // The first rendered message can be a page-local tool fold whose id is not
   // durable. Anchor on the first shared persisted row anywhere in the page.
   const refreshedRowIds = durableRowIds(refreshedTail)
@@ -422,18 +444,14 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
 
   const anchor = firstDurable === undefined ? -1 : previous.findIndex(message => message.rowId === firstDurable.rowId)
 
-  const anchorRowId = firstDurable?.rowId
-
-  // A hit on the first row, or a hit after a prefix whose stored ids are all
-  // earlier, is the backfill anchor. A hit further down on a row that was
-  // glued on late is not: the prefix is newer than the match.
+  // A prefix already represented later in the page must move with that page.
+  // Physical row ids do not order carried compaction generations.
   const prefixIsEarlier =
     anchor > 0 &&
-    anchorRowId !== undefined &&
-    previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
+    previous.slice(0, anchor).every(message => message.rowId === undefined || !refreshedRowIds.has(message.rowId))
 
   if (anchor === 0) {
-    return retainCompletedTurnTools(refreshedTail, previous)
+    return retainLocalTurnParts(refreshedTail, previous)
   }
 
   if (prefixIsEarlier) {
@@ -452,7 +470,7 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
       .slice(0, anchor)
       .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
 
-    return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
+    return retainLocalTurnParts(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
@@ -461,10 +479,10 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   // tail really did cover. Take the page. This is what keeps a finished reply
   // through a long tool turn.
   if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
-    return retainCompletedTurnTools(refreshedTail, previous)
+    return retainLocalTurnParts(refreshedTail, previous)
   }
 
-  return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
+  return retainLocalTurnParts(mergeOverlappingTail(previous, refreshedTail), previous)
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4
@@ -499,8 +517,8 @@ export function olderPageReader(
  * that page entirely, putting its first durable row after the rendered
  * transcript. Read a small, bounded number of older pages until one shares a
  * durable row, so graftRefreshedTailOntoBackfill can retain the live prefix.
- * Stored ids only grow, so once a page reaches below the oldest rendered id
- * no older page can overlap.
+ * Physical representatives can move after compaction, so only overlap,
+ * exhaustion or the bounded page budget terminates this search.
  */
 export async function extendRefreshPageToOverlap(
   refreshedTail: ChatMessage[],
@@ -518,14 +536,12 @@ export async function extendRefreshPageToOverlap(
     return refreshedTail
   }
 
-  const sharesPrevious = (messages: ChatMessage[]) =>
-    messages.some(message => message.rowId !== undefined && previousRowIds.has(message.rowId))
+  const sharesPrevious = (messages: ChatMessage[]) => sharesTranscriptSource(previous, messages)
 
   if (sharesPrevious(refreshedTail)) {
     return refreshedTail
   }
 
-  const oldestPrevious = Math.min(...previousRowIds)
   let extended = refreshedTail
 
   for (let page = 0; page < REFRESH_OVERLAP_PAGE_LIMIT; page += 1) {
@@ -546,10 +562,6 @@ export async function extendRefreshPageToOverlap(
 
     if (sharesPrevious(older)) {
       return extended
-    }
-
-    if (older.some(message => message.rowId !== undefined && message.rowId < oldestPrevious)) {
-      return refreshedTail
     }
   }
 

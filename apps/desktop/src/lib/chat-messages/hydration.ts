@@ -8,6 +8,7 @@ import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { isTodoToolName } from '@/lib/todos'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
+import { storedMessageIdentity, storedPartIdentity } from './display-identity'
 import {
   assistantTextPart,
   chatMessageText,
@@ -40,13 +41,22 @@ const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'
 function persistedImageRefs(text: string) {
   const suffix = /\n\n((?:\[Image attached(?: at)?: [^\n]+\]\n)+)((?:\[screenshot\](?:\n|$))+)$/.exec(text)
 
-  if (!suffix) { return extractImageRefs(text) }
+  if (!suffix) {
+    return extractImageRefs(text)
+  }
+
   const paths = [...suffix[1].matchAll(/^\[Image attached(?: at)?: (.+)\]$/gm)].map(match => match[1])
 
-  if (paths.length !== suffix[2].split('[screenshot]').length - 1) { return extractImageRefs(text) }
+  if (paths.length !== suffix[2].split('[screenshot]').length - 1) {
+    return extractImageRefs(text)
+  }
+
   const extracted = extractImageRefs(text.slice(0, suffix.index))
 
-  return { cleanedText: extracted.cleanedText, refs: [...extracted.refs, ...paths.map(path => `@image:${formatRefValue(path)}`)] }
+  return {
+    cleanedText: extracted.cleanedText,
+    refs: [...extracted.refs, ...paths.map(path => `@image:${formatRefValue(path)}`)]
+  }
 }
 
 // Gateway routing note for Discord turns (gateway/run_inbound.py::discord_triggering_note).
@@ -515,7 +525,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // optimistic composer already uses) and render them via the dedicated
     // attachments row below the bubble instead. The leading `@file:` block
     // (attached files, large pastes) moves there too, for the same parity.
-    const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? persistedImageRefs(rawDisplayContent) : null
+    const imageRefExtraction =
+      displayRole === 'user' && rawDisplayContent ? persistedImageRefs(rawDisplayContent) : null
+
     const fileRefExtraction = imageRefExtraction ? splitLeadingAttachmentRefs(imageRefExtraction.cleanedText) : null
     const displayContent = fileRefExtraction ? fileRefExtraction.text : rawDisplayContent
     const liftedRefs = [...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? [])]
@@ -568,11 +580,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       )
     }
 
-    if (rowId !== undefined) {
-      for (const part of parts) {
-        if (part.type === 'text') {
-          part.sourceRowId = rowId
-        }
+    for (const part of parts) {
+      Object.assign(part, storedPartIdentity(message))
+
+      if (rowId !== undefined && part.type === 'text') {
+        part.sourceRowId = rowId
       }
     }
 
@@ -665,6 +677,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
+      ...storedMessageIdentity(message),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
