@@ -1152,7 +1152,7 @@ class SessionSchemaMixin:
         lower = int(progress[0]) if progress else 0
         deadline = deadline if deadline is not None else time.monotonic() + _MESSAGE_UID_BACKFILL_BUDGET_S
         while True:
-            ids = cursor.execute("SELECT id FROM messages WHERE id > ? ORDER BY id LIMIT ?",
+            ids = cursor.execute("SELECT rowid FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?",
                                  (lower, _MESSAGE_UID_BACKFILL_CHUNK)).fetchall()
             if not ids:
                 self.set_meta(USER_DISPLAY_VERSION_KEY, USER_DISPLAY_VERSION, cursor=cursor)

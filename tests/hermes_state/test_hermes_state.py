@@ -6641,11 +6641,9 @@ class TestHandoffTimestampCarry:
         for role, text in (("user", "u0"), ("assistant", "a0"), ("user", "u4"), ("assistant", "a4"),
                            ("user", "u5"), ("assistant", "a5")):
             db.append_message("root", role=role, content=text)
-        handoff = [{"role": "assistant", "content": "SUMMARY"},
-                   {"role": "user", "content": "u4"},
-                   {"role": "assistant", "content": "a4"},
-                   {"role": "user", "content": "u5"},
-                   {"role": "assistant", "content": "a5"}]
+        tail = [{key: m[key] for key in ("role", "content", "message_uid")}
+                for m in db.get_messages("root")[2:]]
+        handoff = [{"role": "assistant", "content": "SUMMARY"}, *tail]
 
         self._rotate(db, "root", "child", handoff)
 
@@ -6665,7 +6663,7 @@ class TestHandoffTimestampCarry:
         for role, text in (("user", "u0"), ("assistant", "a0"),
                            ("user", "tail-u"), ("assistant", "tail-a")):
             db.append_message("root", role=role, content=text)
-        tail = [{"role": "user", "content": "tail-u"}, {"role": "assistant", "content": "tail-a"}]
+        tail = [{key: m[key] for key in ("role", "content", "message_uid")} for m in db.get_messages("root")[2:]]
         for child_id, parent_id in (("seg1", "root"), ("seg2", "seg1"), ("seg3", "seg2")):
             handoff = [{"role": "assistant", "content": f"SUMMARY-{child_id}"}, *tail]
             self._rotate(db, parent_id, child_id, handoff)
@@ -6689,7 +6687,7 @@ class TestHandoffTimestampCarry:
         db.append_message("root", role="user", content="ok")
         self._rotate(db, "root", "seg", [
             {"role": "assistant", "content": "SUMMARY"},
-            {"role": "user", "content": "ok"},  # carried: adopts the root row's timestamp
+            {"role": "user", "content": "ok", "message_uid": db.get_messages("root")[0]["message_uid"]},
         ])
         db.append_message("seg", role="user", content="ok")  # fresh turn: its own newer timestamp
         oks = [m for m in db.get_messages("seg", include_ancestors=True) if m["content"] == "ok"]
@@ -6702,7 +6700,8 @@ class TestHandoffTimestampCarry:
         db.append_message("root", role="assistant", content="a1")
         stored = {m["content"]: m["timestamp"] for m in db.get_messages("root")}
         handoff = [{"role": "assistant", "content": "SUMMARY"},
-                   {"role": "user", "content": "u1", "timestamp": stored["u1"]},
+                   {"role": "user", "content": "u1", "timestamp": stored["u1"],
+                    "message_uid": db.get_messages("root")[0]["message_uid"]},
                    {"role": "assistant", "content": "a1", "timestamp": stored["a1"] + 500.0},
                    {"role": "user", "content": "fresh", "timestamp": 1234.5}]
 
@@ -6713,7 +6712,7 @@ class TestHandoffTimestampCarry:
         assert handoff[3]["timestamp"] == 1234.5
         contents = [(m["role"], m["content"])
                     for m in db.get_messages("child", include_ancestors=True)]
-        # u1 collapses (carried the durable ts); the offset a1 does not (carried ts is authoritative).
+        # u1 keeps its authored identity. The offset assistant does not share a timestamp identity.
         assert contents.count(("user", "u1")) == 1
         assert contents.count(("assistant", "a1")) == 2
         assert contents.count(("user", "fresh")) == 1

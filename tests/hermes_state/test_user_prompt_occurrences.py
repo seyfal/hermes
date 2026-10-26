@@ -127,10 +127,10 @@ def test_settled_prompt_display_page_vm_work_is_bounded(tmp_path):
     assert steps[1] < steps[0] * 3, steps
 
 
-def test_old_readonly_non_user_index_groups_are_preserved(tmp_path):
+def test_old_readonly_non_user_payloads_are_preserved(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     db.create_session("control", source="desktop")
-    db.append_messages_batch("control", [{"role": "tool", "content": "same full output",
+    db.append_messages_batch("control", [{"role": "tool", "content": f"full output {uid}",
         "timestamp": 1700000000.0, "message_uid": uid} for uid in ('tool-one', 'tool-two')])
     db._execute_write(lambda conn: (conn.execute("UPDATE messages SET display_order = id"),
         conn.execute("DELETE FROM state_meta WHERE key = 'display_user_occurrence_version'")))

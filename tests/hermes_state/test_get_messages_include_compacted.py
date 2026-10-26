@@ -383,8 +383,10 @@ class TestDisplayDedupe:
         assert [message["id"] for message in messages] == [carrier_id, later_id]
         assert messages[0]["content"] == carrier
         assert original_id not in [message["id"] for message in messages]
-        # Index columns never escape the message dict (BLOB identity is not JSON-serializable).
-        assert not {"display_identity", "display_order"} & set(messages[0])
+        # The public address is opaque JSON text, never the internal BLOB.
+        assert isinstance(messages[0]["display_identity"], str)
+        assert len(messages[0]["display_identity"]) == 64
+        assert messages[0]["display_order"] == original_id
         json.dumps(messages)
         # SQLite stores -0.0 and 0.0 as one value; the hashed identity must agree with that.
         db.append_message(sid, role="assistant", content="same", timestamp=-0.0)
