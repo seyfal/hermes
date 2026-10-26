@@ -27,6 +27,9 @@ class SessionCarryMixin:
         order so two identical-content turns cannot both grab the same parent row. Best-effort: on any error
         the insert falls back to today's behavior (publish-time stamp) and never breaks publish.
         """
+        from hermes_state_identity import carry_unaddressed_user_uids
+
+        carry_unaddressed_user_uids(self, conn, parent_session_id, messages)
         try:
             candidates = [i for i, msg in enumerate(messages)
                 if isinstance(msg, dict) and coerce_epoch(msg.get("timestamp"), field="message timestamp") is None]
@@ -48,6 +51,7 @@ class SessionCarryMixin:
                 if queue:
                     msg["timestamp"] = queue.pop(0)
         except Exception:
+            logger.debug("Could not carry parent transcript timestamps", exc_info=True)
             return  # Best-effort: a failed carry falls back to the publish-time stamp, never breaks publish.
 
     def _carried_message(self, conn, source_session_id, msg):
