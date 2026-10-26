@@ -102,10 +102,10 @@ def test_lineage_display_prefers_tip_carrier_over_replayed_parent_ask(db):
     parent = "carrier-parent"
     child = "carrier-child"
     db.create_session(parent, source="tui")
-    db.append_message(parent, "user", "REAL ASK")
+    db.append_message(parent, "user", "REAL ASK", message_uid="authored-ask")
     db.end_session(parent, "compression")
     db.create_session(child, source="tui", parent_session_id=parent)
-    carrier_id = db.append_message(child, "user", _carrier())
+    carrier_id = db.append_message(child, "user", _carrier(), message_uid="authored-ask")
 
     model_history, display_history = db.get_resume_conversations(child)
 
@@ -134,10 +134,10 @@ def test_lineage_display_dedupes_multimodal_ask_in_tip_carrier(db):
         *ask,
     ]
     db.create_session(parent, source="tui")
-    db.append_message(parent, "user", ask)
+    db.append_message(parent, "user", ask, message_uid="authored-ask")
     db.end_session(parent, "compression")
     db.create_session(child, source="tui", parent_session_id=parent)
-    carrier_id = db.append_message(child, "user", carrier)
+    carrier_id = db.append_message(child, "user", carrier, message_uid="authored-ask")
 
     _, display_history = db.get_resume_conversations(child)
 

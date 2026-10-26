@@ -5,11 +5,116 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple
 
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
 from agent.message_sanitization import coalesce_tool_call_id
 from hermes_state_common import _json_or
+
+
+USER_DISPLAY_VERSION_KEY = "display_user_occurrence_version"
+USER_DISPLAY_VERSION = "1"
+
+
+def authored_user_occurrence(db, row):
+    """UID identity only for visible authored users, using the canonical carrier classifier."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY, user_originated_turn_view
+
+    if row["role"] != "user" or "message_uid" not in row.keys() or not row["message_uid"]:
+        return None
+    meta = db._decode_display_metadata(row["display_metadata"]) or {}
+    if meta.get(MODEL_ONLY_DISPLAY_METADATA_KEY):
+        return None
+    message = {"role": "user", "content": db._decode_content(row["content"]),
+               "display_kind": row["display_kind"], "display_metadata": meta,
+               "_compressed_summary": bool(row["_compressed_summary"]) if "_compressed_summary" in row.keys() else False}
+    if user_originated_turn_view(message) is None:
+        return None
+    return ("user-occurrence-v1", row["message_uid"],
+            "steer" if row["display_kind"] == "steer" else "user")
+
+
+def carry_unaddressed_user_uids(db, conn, source_session_id, messages):
+    """Recover legacy compaction copies only from an unambiguous source occurrence and clock."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY, user_originated_turn_view
+    from agent.message_metadata import message_uid_or_none
+    from hermes_cli.timefmt import coerce_epoch
+
+    for msg in messages:
+        if msg.get("role") != "user" or message_uid_or_none(msg):
+            continue
+        timestamp = coerce_epoch(msg.get("timestamp"), field="message timestamp")
+        if timestamp is None:
+            continue
+        metadata = msg.get("display_metadata")
+        if isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY):
+            continue
+        view = user_originated_turn_view(msg)
+        if view is None:
+            continue
+        authority = "steer" if msg.get("display_kind") == "steer" else "user"
+        content = db._encode_content(view.get("content"))
+        uids = set()
+        for row in conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND role = 'user' AND timestamp IS ?",
+            (source_session_id, timestamp),
+        ):
+            occurrence = authored_user_occurrence(db, row)
+            if occurrence is None or occurrence[-1] != authority:
+                continue
+            donor = user_originated_turn_view({"role": "user", "content": db._decode_content(row["content"]),
+                "display_kind": row["display_kind"], "_compressed_summary": bool(row["_compressed_summary"])})
+            if donor is not None and db._encode_content(donor.get("content")) == content:
+                uids.add(row["message_uid"])
+        if len(uids) == 1:
+            msg[MESSAGE_UID] = uids.pop()
+
+
+def user_display_index_current(conn):
+    try:
+        return conn.execute("SELECT 1 FROM state_meta WHERE key = ? AND value = ?",
+                            (USER_DISPLAY_VERSION_KEY, USER_DISPLAY_VERSION)).fetchone() is not None
+    except sqlite3.OperationalError as exc:
+        if "no such table: state_meta" not in str(exc):
+            raise
+        return False
+
+
+def repair_user_display_slice(db, conn, lower, upper):
+    """Repair a rowid-bounded slice without changing canonical messages or folding tool payloads by UID."""
+    rows = conn.execute("SELECT rowid AS _physical_id, * FROM messages WHERE rowid > ? AND rowid <= ? "
+                        "AND (active = 1 OR compacted = 1) ORDER BY rowid", (lower, upper)).fetchall()
+    for row in rows:
+        identity = _display_row_identity(db, conn, row)
+        order = row["display_order"] if row["display_identity"] == identity else row["_physical_id"]
+        peers = conn.execute(
+            "SELECT rowid AS _physical_id, * FROM messages WHERE session_id = ? AND message_uid = ? "
+            "AND (active = 1 OR compacted = 1) ORDER BY rowid", (row["session_id"], row["message_uid"]),
+        ).fetchall() if row["message_uid"] else []
+        peers.extend(conn.execute(
+            "SELECT rowid AS _physical_id, * FROM messages WHERE session_id = ? AND display_identity = ? "
+            "AND (active = 1 OR compacted = 1)", (row["session_id"], identity),
+        ).fetchall())
+        compatible = [peer for peer in peers if _display_row_identity(db, conn, peer) == identity]
+        orders = [peer["display_order"] if peer["display_identity"] == identity else peer["_physical_id"]
+                  for peer in compatible]
+        order = min([row["_physical_id"] if order is None else order] + [v for v in orders if v is not None])
+        conn.execute("UPDATE messages SET display_order = ?, display_identity = ? WHERE rowid = ?",
+                     (order, identity, row["_physical_id"]))
+
+
+def _display_row_identity(db, conn, row):
+    identity = db._display_identity(db._display_dedupe_key(row))
+    if row["_compressed_summary"] and row["message_uid"]:
+        original = conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND message_uid = ? "
+            "AND _compressed_summary = 0 AND (active = 1 OR compacted = 1) ORDER BY id LIMIT 1",
+            (row["session_id"], row["message_uid"]),
+        ).fetchone()
+        if original is not None:
+            identity = db._display_identity(db._display_dedupe_key(original))
+    return identity
 
 
 def _live_or_column(msg: Mapping[str, Any], live_key: str, column: str) -> Any:
