@@ -594,6 +594,18 @@ def test_kanban_checklist_reports_and_persists_explicit_removal():
     assert {"web", "terminal"} <= set(config["platform_toolsets"]["telegram"])
 
 
+def test_peer_messaging_is_an_opt_in_checklist_entry():
+    """The docs send users to ``hermes tools`` → Peer Messaging: it must be offered there, stay off
+    for a platform that never chose it, and stick once selected."""
+    assert "peer_messaging" in _checklist_toolset_keys("cli")
+    config = {}
+    current = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    assert "peer_messaging" not in current
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", current | {"peer_messaging"})
+    assert "peer_messaging" in _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+
 def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     """Custom endpoint writes base_url+model to config and the key to env."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
