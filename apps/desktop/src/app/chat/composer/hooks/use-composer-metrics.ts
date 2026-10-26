@@ -86,6 +86,15 @@ interface UseComposerMetricsResult extends ComposerFit {
   stacked: boolean
 }
 
+/** Elements measured together to reserve the owning transcript's clearance. */
+export function useComposerMetricElements() {
+  const composerRef = useRef<HTMLFormElement | null>(null)
+  const composerDockRef = useRef<HTMLDivElement | null>(null)
+  const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
+
+  return { composerRef, composerDockRef, composerSurfaceRef }
+}
+
 /**
  * Owns the composer's *sizing* engine: the stacked-vs-inline layout decision
  * and the measured-height CSS vars the thread reads for bottom clearance. All
@@ -161,6 +170,32 @@ export function useComposerMetrics({
   const surfaceKeyRef = useRef(surfaceKey)
   surfaceKeyRef.current = surfaceKey
 
+  const syncComposerControls = useCallback((composer: HTMLElement) => {
+    const { width } = composer.getBoundingClientRect()
+
+    if (width > 0) {
+      const nextFit = composerFit(composer, width)
+
+      if (!sameFit(nextFit, lastFitRef.current)) {
+        lastFitRef.current = nextFit
+        setFit(nextFit)
+      }
+    }
+
+    // Expand once the input has actually wrapped past a single line. The
+    // observer only fires on real size changes, so this reads scrollHeight at
+    // most once per wrap (not per keystroke). One line ≈ 28px (1.625rem
+    // min-height + padding); a second line clears ~36px. We only ever expand
+    // here — collapse is handled by the emptied-draft effect to avoid
+    // oscillating across the wrap boundary as the input switches widths.
+    const editor = editorRef.current
+
+    if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
+      setExpanded(true)
+    }
+
+  }, [editorRef])
+
   const syncComposerMetrics = useCallback(() => {
     const composer = composerRef.current
     // The dock is the full docked footprint — strips, status stack, composer —
@@ -186,29 +221,9 @@ export function useComposerMetrics({
     }
 
     const { height } = dock.getBoundingClientRect()
-    const { width } = composer.getBoundingClientRect()
     const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
 
-    if (width > 0) {
-      const nextFit = composerFit(composer, width)
-
-      if (!sameFit(nextFit, lastFitRef.current)) {
-        lastFitRef.current = nextFit
-        setFit(nextFit)
-      }
-    }
-
-    // Expand once the input has actually wrapped past a single line. The
-    // observer only fires on real size changes, so this reads scrollHeight at
-    // most once per wrap (not per keystroke). One line ≈ 28px (1.625rem
-    // min-height + padding); a second line clears ~36px. We only ever expand
-    // here — collapse is handled by the emptied-draft effect to avoid
-    // oscillating across the wrap boundary as the input switches widths.
-    const editor = editorRef.current
-
-    if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
-      setExpanded(true)
-    }
+    syncComposerControls(composer)
 
     // Floats still need their width-driven controls, but no pane reserves
     // bottom clearance while the shared composer is detached.
@@ -263,7 +278,7 @@ export function useComposerMetrics({
         setSurfaceVar(composer, COMPOSER_SURFACE_HEIGHT_VAR, `${bucket}px`)
       }
     }
-  }, [composerDockRef, composerRef, composerSurfaceRef, editorRef])
+  }, [composerDockRef, composerRef, composerSurfaceRef, syncComposerControls])
 
   useResizeObserver(syncComposerMetrics, composerDockRef, composerRef, composerSurfaceRef, editorRef)
 
