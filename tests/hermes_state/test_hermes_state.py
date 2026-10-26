@@ -6700,8 +6700,7 @@ class TestHandoffTimestampCarry:
         db.append_message("root", role="assistant", content="a1")
         stored = {m["content"]: m["timestamp"] for m in db.get_messages("root")}
         handoff = [{"role": "assistant", "content": "SUMMARY"},
-                   {"role": "user", "content": "u1", "timestamp": stored["u1"],
-                    "message_uid": db.get_messages("root")[0]["message_uid"]},
+                   {"role": "user", "content": "u1", "timestamp": stored["u1"]},
                    {"role": "assistant", "content": "a1", "timestamp": stored["a1"] + 500.0},
                    {"role": "user", "content": "fresh", "timestamp": 1234.5}]
 
@@ -6712,7 +6711,7 @@ class TestHandoffTimestampCarry:
         assert handoff[3]["timestamp"] == 1234.5
         contents = [(m["role"], m["content"])
                     for m in db.get_messages("child", include_ancestors=True)]
-        # u1 keeps its authored identity. The offset assistant does not share a timestamp identity.
+        # u1 collapses (carried the durable ts); the offset a1 does not (carried ts is authoritative).
         assert contents.count(("user", "u1")) == 1
         assert contents.count(("assistant", "a1")) == 2
         assert contents.count(("user", "fresh")) == 1

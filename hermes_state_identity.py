@@ -35,6 +35,42 @@ def authored_user_occurrence(db, row):
             "steer" if row["display_kind"] == "steer" else "user")
 
 
+def carry_unaddressed_user_uids(db, conn, source_session_id, messages):
+    """Recover legacy compaction copies only from an unambiguous source occurrence and clock."""
+    from agent.context_compressor import MODEL_ONLY_DISPLAY_METADATA_KEY, user_originated_turn_view
+    from agent.message_metadata import message_uid_or_none
+    from hermes_cli.timefmt import coerce_epoch
+
+    for msg in messages:
+        if msg.get("role") != "user" or message_uid_or_none(msg):
+            continue
+        timestamp = coerce_epoch(msg.get("timestamp"), field="message timestamp")
+        if timestamp is None:
+            continue
+        metadata = msg.get("display_metadata")
+        if isinstance(metadata, dict) and metadata.get(MODEL_ONLY_DISPLAY_METADATA_KEY):
+            continue
+        view = user_originated_turn_view(msg)
+        if view is None:
+            continue
+        authority = "steer" if msg.get("display_kind") == "steer" else "user"
+        content = db._encode_content(view.get("content"))
+        uids = set()
+        for row in conn.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND role = 'user' AND timestamp IS ?",
+            (source_session_id, timestamp),
+        ):
+            occurrence = authored_user_occurrence(db, row)
+            if occurrence is None or occurrence[-1] != authority:
+                continue
+            donor = user_originated_turn_view({"role": "user", "content": db._decode_content(row["content"]),
+                "display_kind": row["display_kind"], "_compressed_summary": bool(row["_compressed_summary"])})
+            if donor is not None and db._encode_content(donor.get("content")) == content:
+                uids.add(row["message_uid"])
+        if len(uids) == 1:
+            msg[MESSAGE_UID] = uids.pop()
+
+
 def user_display_index_current(conn):
     try:
         return conn.execute("SELECT 1 FROM state_meta WHERE key = ? AND value = ?",
