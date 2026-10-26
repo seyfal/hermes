@@ -228,7 +228,9 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
  */
 function pageCoversWindow(previous: ChatMessage[], refreshedIds: Set<string>, refreshedRowIds: Set<number>): boolean {
   return previous.every(
-    message => (message.rowId !== undefined && refreshedRowIds.has(message.rowId)) || refreshedIds.has(message.id)
+    message =>
+      !messageDisplayIdentities(message).length &&
+      ((message.rowId !== undefined && refreshedRowIds.has(message.rowId)) || refreshedIds.has(message.id))
   )
 }
 
@@ -237,7 +239,7 @@ function durableRowIds(messages: ChatMessage[]): Set<number> {
 }
 
 /** A text-only refresh can omit the live tool bubble after the turn settles. */
-function retainLocalTurnParts(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
   const previousFinalIndex = previous.findLastIndex(
     message => message.role === 'assistant' && message.rowId !== undefined && Boolean(chatMessageText(message).trim())
   )
@@ -321,6 +323,13 @@ interface StoredRowSlot {
  * stored id after the last stored row stay at the end (page first, then live).
  */
 function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessage[]): ChatMessage[] {
+  if (
+    refreshedTail.some(message => messageDisplayIdentities(message).length) &&
+    previous.some(message => messageDisplayIdentities(message).length)
+  ) {
+    return mergeProvenancePage(refreshedTail, previous)
+  }
+
   // Compaction, rewind, or a different session arrives as new stored ids.
   // This function is the path that puts that page on screen.
   if (!sharesDurableRow(previous, refreshedTail)) {
@@ -429,20 +438,19 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     return refreshedTail
   }
 
-  if (
-    refreshedTail.some(message => messageDisplayIdentities(message).length) &&
-    previous.some(message => messageDisplayIdentities(message).length)
-  ) {
-    return retainLocalTurnParts(mergeProvenancePage(refreshedTail, previous), previous)
-  }
-
   // The first rendered message can be a page-local tool fold whose id is not
   // durable. Anchor on the first shared persisted row anywhere in the page.
   const refreshedRowIds = durableRowIds(refreshedTail)
 
+  // Canonical folds can carry sources beyond their physical head row.
+  const canonical =
+    refreshedTail.some(message => messageDisplayIdentities(message).length) &&
+    previous.some(message => messageDisplayIdentities(message).length)
+
   const firstDurable = refreshedTail.find(message => message.rowId !== undefined)
 
-  const anchor = firstDurable === undefined ? -1 : previous.findIndex(message => message.rowId === firstDurable.rowId)
+  const anchor =
+    canonical || firstDurable === undefined ? -1 : previous.findIndex(message => message.rowId === firstDurable.rowId)
 
   // A prefix already represented later in the page must move with that page.
   // Physical row ids do not order carried compaction generations.
@@ -451,7 +459,7 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     previous.slice(0, anchor).every(message => message.rowId === undefined || !refreshedRowIds.has(message.rowId))
 
   if (anchor === 0) {
-    return retainLocalTurnParts(refreshedTail, previous)
+    return retainCompletedTurnTools(refreshedTail, previous)
   }
 
   if (prefixIsEarlier) {
@@ -470,7 +478,7 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
       .slice(0, anchor)
       .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
 
-    return retainLocalTurnParts(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
+    return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
@@ -479,10 +487,10 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   // tail really did cover. Take the page. This is what keeps a finished reply
   // through a long tool turn.
   if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
-    return retainLocalTurnParts(refreshedTail, previous)
+    return retainCompletedTurnTools(refreshedTail, previous)
   }
 
-  return retainLocalTurnParts(mergeOverlappingTail(previous, refreshedTail), previous)
+  return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4
