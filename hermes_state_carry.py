@@ -8,14 +8,10 @@ import json
 import logging
 from typing import Any
 
-from agent.message_metadata import MESSAGE_UID
 from hermes_cli.timefmt import coerce_epoch
-from hermes_state_common import _placeholders
 from hermes_state_messages import _parse_tool_calls, _scrub_surrogates
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
-
-_UID_CHUNK = 500
 
 
 class SessionCarryMixin:
@@ -54,46 +50,37 @@ class SessionCarryMixin:
         except Exception:
             return  # Best-effort: a failed carry falls back to the publish-time stamp, never breaks publish.
 
-    def _carry_durable_content(self, conn, messages: list[dict[str, Any]]) -> None:
-        """Give a carried user/assistant dict its durable original's stored text back when the two differ
-        only by the load lens.
+    def _carried_message(self, conn, source_session_id, msg):
+        """Restore only safe whitespace at serialization, using a row in the proven source segment."""
+        from agent.message_metadata import DB_ROW_SNAPSHOT, message_uid_or_none
+        from agent.transcript_repair import transcript_row_snapshot
+        from hermes_state_messages import sanitize_context
 
-        A resumed agent holds those strings as ``_rows_to_messages`` decoded them: sanitized and stripped
-        (:meth:`_loaded_view_content`). Re-inserting that text as the carried copy silently edits the
-        logical message (a trailing newline the user sent is gone), and because ``_display_dedupe_key``
-        hashes content, the copy no longer folds into its archived original: every display read lists the
-        message twice and content-keyed consumers see it as new. The original is named by the dict's
-        ``message_uid``; any difference beyond that lens is a real edit and is kept as written.
-        Best-effort: on any error the dicts are inserted as they are, and the failure is logged."""
-        try:
-            carried: dict[str, list[dict[str, Any]]] = {}
-            for msg in messages:
-                if not isinstance(msg, dict) or not isinstance(msg.get("content"), str):
-                    continue
-                uid = msg.get(MESSAGE_UID)
-                if uid and msg.get("role") in ("user", "assistant"):
-                    carried.setdefault(uid, []).append(msg)
-            if not carried:
-                return
-            uids = list(carried)
-            originals: dict[str, tuple[str, Any]] = {}
-            for start in range(0, len(uids), _UID_CHUNK):
-                chunk = uids[start:start + _UID_CHUNK]
-                for row in conn.execute(
-                        f"SELECT message_uid, role, content FROM messages WHERE message_uid IN ({_placeholders(chunk)}) "
-                        "ORDER BY id", chunk).fetchall():
-                    originals.setdefault(row["message_uid"], (row["role"], row["content"]))
-            for uid, msgs in carried.items():
-                if uid not in originals:
-                    continue
-                role, raw = originals[uid]
-                stored = self._decode_content(raw)
-                if not isinstance(stored, str):
-                    continue
-                for msg in msgs:
-                    if (msg.get("role") == role and msg["content"] != stored
-                            and self._loaded_view_content(role, stored) == msg["content"]):
-                        msg["content"] = stored
-        except Exception:
-            # Best-effort boundary: the copy keeps the caller's text, exactly as before this carry existed.
-            logger.warning("carry of durable message text failed; inserting the carried rows as given", exc_info=True)
+        uid = message_uid_or_none(msg)
+        if not uid or msg.get("role") not in ("user", "assistant") or not isinstance(msg.get("content"), str):
+            return msg
+        row_id = msg.get("_row_id")
+        snapshot = msg.get(DB_ROW_SNAPSHOT)
+        if isinstance(row_id, int):
+            row = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND id = ? AND message_uid = ?",
+                (source_session_id, row_id, uid),
+            ).fetchone()
+        elif isinstance(snapshot, str) or msg.get("timestamp") is not None:
+            row = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND message_uid = ? AND role = ? "
+                "AND timestamp IS ? ORDER BY id DESC LIMIT 1",
+                (source_session_id, uid, msg["role"], msg.get("timestamp")),
+            ).fetchone()
+        else:
+            return msg
+        if row is None or row["role"] != msg["role"]:
+            return msg
+        if isinstance(snapshot, str) and transcript_row_snapshot(row) != snapshot:
+            return msg
+        stored = self._decode_content(row["content"])
+        # Sanitized model text must never resurrect removed instructions or control bytes.
+        if (isinstance(stored, str) and stored != msg["content"]
+                and sanitize_context(stored) == stored and stored.strip() == msg["content"]):
+            return {**msg, "content": stored}
+        return msg
