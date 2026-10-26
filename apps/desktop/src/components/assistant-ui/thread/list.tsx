@@ -626,6 +626,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // transcript at its true bottom. While false, scrollTop is a way-point of a
   // load in progress, not a reading position anyone chose — never anchor to it.
   const loadSettledRef = useRef(false)
+  const landingReachedRef = useRef(false)
   // What the in-flight load is steering toward; decides whether a backfill
   // step may anchor while the load is still unsettled.
   const loadTargetRef = useRef<ThreadScrollState>(THREAD_SCROLL_BOTTOM)
@@ -976,7 +977,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const storageKey = scrollStorageKey
 
     const flush = () => {
-      if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
+      if (sessionKey && loadSettledRef.current && landingReachedRef.current && restoredContentKeyRef.current === sessionKey) {
         saveThreadScrollPosition(sessionKey, liveScrollStateRef.current, storageKey)
       }
     }
@@ -1052,7 +1053,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // into a still-arriving transcript), and persisting those would corrupt
     // the session's real reading position.
     const record = () => {
-      if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
+      if (sessionKey && loadSettledRef.current && landingReachedRef.current && restoredContentKeyRef.current === sessionKey) {
         saveThreadScrollPosition(sessionKey, liveScrollStateRef.current, storageKey)
       }
     }
@@ -1085,6 +1086,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // here every scroll/RO event describes the restored session.
     liveScrollStateRef.current = target
     loadTargetRef.current = target
+    landingReachedRef.current = false
 
     stopScroll()
 
@@ -1098,6 +1100,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         restoreReadingAnchor(node, readingAnchor)
       } else {
         node.scrollTop = threadScrollTargetTop(target, node)
+        landingReachedRef.current = target.kind === 'bottom' || target.fromBottom <= node.scrollHeight - node.clientHeight
       }
 
       ownScrollTop = node.scrollTop
@@ -1258,6 +1261,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         return
       }
 
+      landingReachedRef.current = true
       cancelRestore()
     }
 
@@ -1268,6 +1272,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       target = THREAD_SCROLL_BOTTOM
       restoreFromBottomRef.current = null
       liveScrollStateRef.current = target
+      landingReachedRef.current = true
 
       applyRestoreRef.current = () => {
         applyTarget(el)
@@ -1542,6 +1547,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       prependAnchorRef.current = null
       restoreFromBottomRef.current = null
+      landingReachedRef.current = true
       // Consuming a parked offset (clamped-exit) means the view just landed at
       // its real reading position — the load is settled from here on.
       loadSettledRef.current = true
