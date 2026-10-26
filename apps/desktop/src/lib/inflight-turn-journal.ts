@@ -5,7 +5,10 @@ import {
   normalizeWs as normalizedText
 } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
+import { assistantPartCovered } from '@/lib/chat-messages/part-coverage'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
+
+import { durableFinalCoversJournal } from './inflight-turn-journal-coverage'
 
 /**
  * Crash-survivable in-flight turn journal.
@@ -730,25 +733,12 @@ function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages
         base.role === 'assistant' &&
         !base.hidden &&
         isCommittedRow(base) &&
-        identityCovers(base, index, message) &&
         base.error === message.error &&
-        normalizedText(chatMessageText(base)) === normalizedText(chatMessageText(message)) &&
-        message.parts.every(part => {
-          if (part.type === 'tool-call') {
-            return base.parts.some(
-              candidate =>
-                candidate.type === 'tool-call' && Boolean(part.toolCallId) && candidate.toolCallId === part.toolCallId
-            )
-          }
-
-          return (
-            part.type !== 'reasoning' ||
-            base.parts.some(
-              candidate =>
-                candidate.type === 'reasoning' && normalizedText(candidate.text) === normalizedText(part.text)
-            )
-          )
-        })
+        (durableFinalCoversJournal(base, message) ||
+          (identityCovers(base, index, message) &&
+            normalizedText(chatMessageText(base)) === normalizedText(chatMessageText(message)) &&
+            message.parts.every(part => part.type === 'text' ||
+              base.parts.some(candidate => assistantPartCovered(candidate, part)))))
     )
   )
 }
