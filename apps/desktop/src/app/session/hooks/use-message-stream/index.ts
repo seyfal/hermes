@@ -52,6 +52,7 @@ import { handleServerRequest as dispatchServerRequest } from './gateway-event/se
 import { isToolOnlyInterimReplay } from './interim-replay'
 import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
+import { currentResponseUserIndex } from './response-boundary'
 import {
   currentResponseParts,
   mergeCurrentResponseText,
@@ -683,7 +684,7 @@ export function useMessageStream({
 
         let nextMessages = state.messages
 
-        if (isToolOnlyInterimReplay(nextMessages, streamId, authoritativeText, state.interimBoundaryPending)) {
+        if (isToolOnlyInterimReplay(nextMessages, streamId, authoritativeText, state.interimBoundaryPending, sessionId)) {
           return state
         }
 
@@ -709,7 +710,10 @@ export function useMessageStream({
           // reply twice (#120104). When this occurrence's newest visible
           // assistant row already carries the same text — including a skewed
           // duplicate landing after the turn settled — refresh it in place.
-          const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
+          const lastUserIndex = currentResponseUserIndex(
+            nextMessages, sessionId, Boolean(streamId || state.sawAssistantPayload || state.interimBoundaryPending)
+          )
+
           const normalizedText = authoritativeText.replace(/\s+/g, ' ').trim()
 
           // Hydration folds several persisted commentary rows into one bubble.
@@ -933,9 +937,7 @@ export function useMessageStream({
         // turn completing without deltas still starts its own occurrence.
         const hasCurrentResponse = Boolean(streamId || state.sawAssistantPayload || interimBoundaryPending)
 
-        const lastUserIndex = prev.findLastIndex(
-          message => message.role === 'user' && !(hasCurrentResponse && message.id === `user-queued-${sessionId}`)
-        )
+        const lastUserIndex = currentResponseUserIndex(prev, sessionId, hasCurrentResponse)
 
         // A redirect reserves its correction row below the live stream without
         // sealing it, so a still-pending stream row above the last user message

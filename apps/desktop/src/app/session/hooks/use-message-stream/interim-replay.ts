@@ -1,11 +1,14 @@
 import { type ChatMessage, chatMessageText, normalizeWs } from '@/lib/chat-messages'
 
+import { currentResponseUserIndex } from './response-boundary'
+
 /** A late seal must not turn a tool-only continuation into a second commentary. */
 export function isToolOnlyInterimReplay(
   messages: ChatMessage[],
   streamId: string | null,
   text: string,
-  interimBoundaryPending: boolean
+  interimBoundaryPending: boolean,
+  sessionId: string
 ): boolean {
   if (!streamId || !interimBoundaryPending) {
     return false
@@ -24,7 +27,7 @@ export function isToolOnlyInterimReplay(
     return false
   }
 
-  const lastUserIndex = messages.findLastIndex(message => message.role === 'user')
+  const lastUserIndex = currentResponseUserIndex(messages, sessionId, true)
   const normalized = normalizeWs(text)
 
   return messages.some(
