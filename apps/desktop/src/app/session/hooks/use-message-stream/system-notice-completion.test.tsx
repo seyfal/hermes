@@ -14,6 +14,7 @@ it('collapses an adjacent interim across a system notice without dropping its to
     { id: 'notice', role: 'system', parts: [{ type: 'text', text: 'review:Saved notes' }] },
     { id: 'live', role: 'assistant', parts: [{ type: 'tool-call', toolCallId: 'call', toolName: 'read_file', args: {}, result: 'ok' }], pending: true }
   ]
+
   const result = collapseDuplicateFinalAfterToolInterim(messages, 2, {
     completeMessage: message => ({ ...message, interim: false, pending: false }),
     finalText: 'Answer',
@@ -27,6 +28,7 @@ it('collapses an adjacent interim across a system notice without dropping its to
 
 it('keeps a review summary while settling the reply and tool once', async () => {
   const stream = renderMessageStream('review-summary-completion')
+
   const frames: GatewayFrame[] = [
     ['message.start', {}],
     ['message.delta', { text: 'Answer' }],
