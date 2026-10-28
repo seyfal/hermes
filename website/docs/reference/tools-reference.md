@@ -176,6 +176,17 @@ Enabled for sessions whose source is the desktop app, whichever backend it's con
 |------|-------------|----------------------|
 | `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). Discovery supports time bounds (`after`/`before` — ISO dates or relative durations like `7d`, `24h`, `2w`) and `exclude_session_ids` for iterative re-finding. | — |
 
+## `peer_messaging` toolset
+
+Inspired by Muse Code's inter-session messaging. Discovery and sending are off by default — enable via `hermes tools` → Peer Messaging. Receiving is independent of that selection: an enabled sender can message another live session in the same Hermes home, and the recipient reads its mailbox before each model request, even without these tools enabled. Idle sessions are not automatically started; a message waits for the recipient's next turn. Ended sessions are refused.
+
+A received message arrives as its own transcript row, framed as a message from another Hermes session and not from the user: after the recipient's latest tool results, where a mid-turn `/steer` goes, or right after the user's message when its next turn starts. It names the sending session, carries no user authority and never starts a turn by itself; control-frame markers quoted inside it (such as the `/steer` marker) are relabelled, so a peer cannot pose as the user. A successful send means queued, not read or completed. A message file is deleted only after its row is stored in the recipient's session database, so a receiver crash leaves the message stored or still queued (a crash between those two steps can deliver it twice). This primitive does not provide acknowledgment to the sender or exactly-once delivery.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `peer_sessions` | List the user's other recently active Hermes sessions on this machine (session id, title, source, cwd, last activity). Local-only discovery over the session store. | — |
+| `peer_send` | Send a message to another of the user's Hermes sessions. Delivered via a local filesystem mailbox under the Hermes home (never the network); the peer receives it before its next model request if running, else at the start of its next turn. | — |
+
 ## `skills` toolset
 
 | Tool | Description | Requires environment |
@@ -372,5 +383,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 
