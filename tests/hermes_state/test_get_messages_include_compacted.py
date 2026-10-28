@@ -161,9 +161,9 @@ class TestDisplayDedupe:
                 f"""
                 INSERT INTO messages
                     (session_id, role, content, tool_call_id, tool_calls,
-                     tool_name, timestamp, active, compacted)
+                     tool_name, timestamp, active, compacted, message_uid)
                 SELECT session_id, role, content, tool_call_id, tool_calls,
-                       tool_name, timestamp, 0, 1
+                       tool_name, timestamp, 0, 1, message_uid
                 FROM messages
                 WHERE session_id = ? AND id IN ({placeholders})
                 """,
@@ -365,7 +365,9 @@ class TestDisplayDedupe:
             f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
             f"{_SUMMARY_END_MARKER}"
         )
-        carrier_id = db.append_message(sid, role="user", content=carrier, timestamp=100.0)
+        original_uid = db._read_one("SELECT message_uid FROM messages WHERE id = ?", (original_id,))[0]
+        carrier_id = db.append_message(sid, role="user", content=carrier, timestamp=100.0,
+                                       message_uid=original_uid)
         # Simulate rows written before display_order existed; lazy backfill must use
         # the same normalized user-turn key as the historical Python projection.
         db._execute_write(lambda conn: conn.execute(
@@ -381,8 +383,10 @@ class TestDisplayDedupe:
         assert [message["id"] for message in messages] == [carrier_id, later_id]
         assert messages[0]["content"] == carrier
         assert original_id not in [message["id"] for message in messages]
-        # Index columns never escape the message dict (BLOB identity is not JSON-serializable).
-        assert not {"display_identity", "display_order"} & set(messages[0])
+        # The public address is opaque JSON text, never the internal BLOB.
+        assert isinstance(messages[0]["display_identity"], str)
+        assert len(messages[0]["display_identity"]) == 64
+        assert messages[0]["display_order"] == original_id
         json.dumps(messages)
         # SQLite stores -0.0 and 0.0 as one value; the hashed identity must agree with that.
         db.append_message(sid, role="assistant", content="same", timestamp=-0.0)

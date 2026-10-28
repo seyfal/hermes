@@ -192,6 +192,7 @@ def resolve_and_repair_transcript_batch(
     decode_content_fn: Callable[[Any], Any],
     serialize_message_fn: Callable[[dict[str, Any], float], Mapping[str, Any]],
     decode_row_fn: Callable[[Mapping[str, Any]], dict[str, Any]],
+    restore_display_fn: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve row-addressed rewrites without appending duplicates or replacing concurrent winners.
 
@@ -270,6 +271,8 @@ def resolve_and_repair_transcript_batch(
                 "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND content IS ?",
                 (encode_content_fn(msg.get("content")), target_id, session_id, target_row["content"]),
             ).rowcount > 0
+            if wrote and restore_display_fn is not None:
+                restore_display_fn()
         else:
             # Legacy dict (no digest: a row-addressed resume, a clone, or a repair_alternation=False
             # projection) over a non-blank assistant row: another writer already filled it. Adopt its content

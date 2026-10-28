@@ -1119,12 +1119,13 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
 
 
 def _build_replay_entry(
-    role: str, content: Any, msg: dict[str, Any], preserve_timestamp: bool = False
+    role: str, content: Any, msg: dict[str, Any]
 ) -> dict[str, Any]:
     """Build a replay entry for a non-tool-calling message, preserving ``_ASSISTANT_REPLAY_FIELDS``.
 
-    ``preserve_timestamp``: only user rows need it (stale-dangerous-confirmation stripper). Falsy fields are
-    dropped EXCEPT ``reasoning_content``: DeepSeek/Kimi treat "" as a sentinel; dropping it can 400.
+    The durable ``timestamp`` is kept (the wire sanitizers strip it): it is part of the row's display identity,
+    so a compaction copy written from a timestamp-less replay dict lands in its own display slot and the
+    message renders twice (#123985).
 
     Empty values: most fields are dropped when falsy (matching the original PR #2974 behaviour) since an
     empty list/string for those carries no information. The exception is ``reasoning_content``:
@@ -1151,7 +1152,7 @@ def _build_replay_entry(
             if (_rval is None) if _rkey == "reasoning_content" else (not _rval):
                 continue
             entry[_rkey] = _rval
-    if preserve_timestamp and msg.get("timestamp"):
+    if msg.get("timestamp") is not None:
         entry["timestamp"] = msg["timestamp"]
     entry.update(scaffolding_replay_fields(msg))  # a proactive prune re-persists this view: keep the flags
     # Replay rebuilds the SAME conversation: every role keeps its uid and merge witness, so a context engine sees the
@@ -1276,7 +1277,7 @@ def _build_gateway_agent_history(
 
         # Rich tool_calls/tool-result rows pass through intact so the API sees valid assistant→tool sequences.
         if "tool_calls" in msg or "tool_call_id" in msg or role == "tool":
-            clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
+            clean_msg = {k: v for k, v in msg.items() if k != "observed"}
             agent_history.append(clean_msg)
         elif content or _has_replayable_sidecar(role, content, msg):
             replay_timestamp = msg.get("timestamp")
@@ -1292,8 +1293,7 @@ def _build_gateway_agent_history(
                             replay_timestamp = embedded_timestamp
                 if not content:
                     continue
-            # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
-            entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
+            entry = _build_replay_entry(role, content, msg)
             if inject_timestamps and role == "user" and isinstance(content, str) and not is_compaction_scaffolding(msg):
                 rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
                 # Preserve only a sidecar matching the complete rendered message,
