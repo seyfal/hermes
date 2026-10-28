@@ -540,6 +540,8 @@ DEFAULT_CONFIG = {
     # 12-15K tokens). max_lines: max `limit` one read_file call may request before clamping.
     # max_line_length: per-line cap in read_file's line-numbered view (chars).
     "tool_output": {"max_bytes": 50000, "max_lines": 2000, "max_line_length": 2000},
+    # Spill a tool result to cache/spillover/ (preview + path in context) over these chars; small windows scale lower.
+    "tool_budget": {"result_size_chars": 100000, "turn_budget_chars": 200000, "mcp_result_size_chars": 50000},
     # Tool loop guardrails nudge models that repeat failed/non-progressing tool calls. Soft warnings
     # are always on; hard stops are opt-in so interactive sessions keep flowing.
     "tool_loop_guardrails": {
@@ -549,9 +551,7 @@ DEFAULT_CONFIG = {
         # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
         "non_interactive_hard_stop_enabled": True,
         "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
-        "hard_stop_after": {
-            "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5
-        },
+        "hard_stop_after": {"exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5},
         # Per-turn hard ceilings for runaway-prone tools; counters reset every turn, always on
         # regardless of the thresholds above. Dozens of searches/subagents in ONE turn is already
         # pathological, hence low defaults. 0 = unlimited.
