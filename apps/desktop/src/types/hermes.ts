@@ -704,6 +704,12 @@ export interface MessageReaction {
 }
 
 export interface SessionMessage {
+  session_id?: string
+  message_uid?: string
+  /** Canonical display occurrence from the server, never derived from rendered text. */
+  display_identity?: string
+  /** Segment-local display slot. Array order is authoritative across segments. */
+  display_order?: number
   /**
    * Full tool arguments for a gateway-projected tool row (`role: 'tool'`).
    * `context` is an 80-char display preview. The expanded tool row rebuilds
