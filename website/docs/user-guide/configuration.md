@@ -941,16 +941,18 @@ tool_output:
 
 ### Tool-Result Spillover Budget
 
-Separately from truncation, oversized tool *results* are spilled to disk rather than cut: the full output is saved under `$HERMES_HOME/cache/spillover/` and the in-context content is replaced by a preview plus the saved file's path (readable with `read_file` using `offset`/`limit`, or processable with `execute_code`). The generic per-result spillover threshold is 100,000 chars, scaled down automatically for small-context models. A spill file is kept as long as any session's transcript still points at it, and leaves with its session when that session is deleted or pruned; the gateway's hourly housekeeping and the first spill of each process only sweep unreferenced files older than the session retention window (`sessions.retention_days`, default 90 days, never less than 24 hours), so a session resumed later still finds what its transcript points at.
+Separately from truncation, oversized tool *results* are spilled to disk rather than cut: the full output is saved under `$HERMES_HOME/cache/spillover/` and the in-context content is replaced by a preview plus the saved file's path (readable with `read_file` using `offset`/`limit`, or processable with `execute_code`). The generic per-result spillover threshold is 100,000 chars and the per-turn budget (all of one turn's results together) is 200,000 chars; both are caps that small-context models scale down from automatically. A spill file is kept as long as any session's transcript still points at it, and leaves with its session when that session is deleted or pruned; the gateway's hourly housekeeping and the first spill of each process only sweep unreferenced files older than the session retention window (`sessions.retention_days`, default 90 days, never less than 24 hours), so a session resumed later still finds what its transcript points at.
 
 MCP tool results (tools named `mcp_*`) spill at a tighter **50,000-char** default: MCP servers routinely return large un-paginated payloads (tool-discovery catalogs, batched executions) that would otherwise sit under the generic threshold and bloat context on every subsequent turn. Nothing is lost — the full result is preserved on disk. Override the threshold via:
 
 ```yaml
 tool_budget:
+  result_size_chars: 100000      # per-result spillover threshold (floor 8000)
+  turn_budget_chars: 200000      # all tool results of one turn together (floor 16000)
   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
 ```
 
-The MCP threshold is always capped at the (possibly context-scaled) generic per-result threshold, so raising it cannot exceed what the active model's window allows.
+Every result kept in context is re-sent with every later model call, so lowering `result_size_chars` (e.g. to 16000) keeps long sessions cheaper at the cost of a `read_file` call when the model needs the full output. `read_file` itself is never spilled. The MCP threshold is always capped at the (possibly context-scaled) generic per-result threshold, so raising it cannot exceed what the active model's window allows.
 
 Hermes also flags **provider-side elision**: when an MCP or web tool result embeds its own truncation markers (`...N more items`, `"has_more": true`, "saved to sandbox" notes), a one-line notice is appended to the result warning that the visible data is incomplete and should be paged/fetched before treating any enumeration as complete.
 

@@ -175,3 +175,52 @@ class TestMcpPrefixThreshold:
         cfg = budget_for_context_window(16_384)  # scaled default < 50K
         assert cfg.default_result_size < 50_000
         assert cfg.resolve_threshold("mcp_tool") == cfg.default_result_size
+
+
+# ---------------------------------------------------------------------------
+# Generic thresholds from config (tool_budget.result_size_chars / turn_budget_chars)
+# ---------------------------------------------------------------------------
+
+
+class TestConfiguredGenericBudget:
+    """Config sets the generic per-result and per-turn caps; small windows can go lower."""
+
+    @staticmethod
+    def _write_config(tmp_path, monkeypatch, body):
+        (tmp_path / "config.yaml").write_text("tool_budget:\n" + body)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def test_config_caps_apply_without_known_window(self, tmp_path, monkeypatch):
+        self._write_config(tmp_path, monkeypatch, "  result_size_chars: 16000\n  turn_budget_chars: 48000\n")
+        cfg = budget_for_context_window(None)
+        assert (cfg.default_result_size, cfg.turn_budget) == (16_000, 48_000)
+        assert cfg.resolve_threshold("terminal") == 16_000
+        assert cfg.resolve_threshold("read_file") == float("inf")
+
+    def test_config_caps_large_window(self, tmp_path, monkeypatch):
+        self._write_config(tmp_path, monkeypatch, "  result_size_chars: 16000\n  turn_budget_chars: 48000\n")
+        cfg = budget_for_context_window(1_000_000)
+        assert (cfg.default_result_size, cfg.turn_budget) == (16_000, 48_000)
+
+    def test_small_window_still_scales_below_configured_cap(self, tmp_path, monkeypatch):
+        unconfigured = budget_for_context_window(65_536)
+        self._write_config(tmp_path, monkeypatch, "  result_size_chars: 90000\n  turn_budget_chars: 190000\n")
+        cfg = budget_for_context_window(65_536)
+        assert cfg.default_result_size == unconfigured.default_result_size < 90_000
+        assert cfg.turn_budget == unconfigured.turn_budget < 190_000
+
+    def test_values_below_floor_are_raised_to_floor(self, tmp_path, monkeypatch):
+        from tools.budget_config import _MIN_RESULT_SIZE_CHARS, _MIN_TURN_BUDGET_CHARS
+        self._write_config(tmp_path, monkeypatch, "  result_size_chars: 100\n  turn_budget_chars: 200\n")
+        for window in (None, 1_000_000):
+            cfg = budget_for_context_window(window)
+            assert (cfg.default_result_size, cfg.turn_budget) == (_MIN_RESULT_SIZE_CHARS, _MIN_TURN_BUDGET_CHARS)
+
+    def test_invalid_value_keeps_default_without_dropping_valid_siblings(self, tmp_path, monkeypatch):
+        from tools.budget_config import DEFAULT_TURN_BUDGET_CHARS
+        self._write_config(tmp_path, monkeypatch,
+                           "  result_size_chars: 16000\n  turn_budget_chars: lots\n  mcp_result_size_chars: -1\n")
+        cfg = budget_for_context_window(None)
+        assert cfg.default_result_size == 16_000
+        assert cfg.turn_budget == DEFAULT_TURN_BUDGET_CHARS
+        assert cfg.mcp_result_size == 50_000
