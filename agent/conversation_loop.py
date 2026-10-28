@@ -1687,15 +1687,14 @@ def _run_conversation_turn(
     # leak into the next message): interim-commentary dedup spans the whole turn but not
     # the next; a SessionDB append failure (and its classified cause) halts only this turn;
     # a failed compression-tip adoption is reported only against its own turn; the
-    # thinking-only-truncation one-shot must not survive an interrupted turn; credential-
-    # pool refresh tallies cap same-entry refreshes on a persistent 401 (#26080); usage
-    # for on_turn_complete() stays None on turns that never reach a response.
+    # thinking-only-truncation and auth recovery must not survive an interrupted turn.
     agent._delivered_interim_texts = set()
     agent._incremental_persistence_failed = False
     agent._last_persistence_error_cause = None
     agent._compression_adoption_failed = False
     agent._ephemeral_reasoning_off = False
-    agent._auth_pool_refresh_counts = {}
+    from agent.agent_runtime_helpers_auth import reset_auth_recovery
+    reset_auth_recovery(agent)
     agent._last_turn_usage = None
 
     s = _LoopState(
