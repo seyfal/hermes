@@ -49,9 +49,16 @@ import {
 } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
+import { isToolOnlyInterimReplay } from './interim-replay'
 import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
-import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
+import { currentResponseUserIndex } from './response-boundary'
+import {
+  continuesInterimResponse,
+  currentResponseParts,
+  mergeCurrentResponseText,
+  persistedFinalBubbleIndex,
+} from './response-parts'
 import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -86,61 +93,6 @@ interface QueuedStreamDelta {
 let streamMessageSeq = 0
 
 const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
-
-/**
- * A sealed stream can lose a few characters while the authoritative final
- * remains the same reply. Limit the tolerated edit distance so a separate
- * assistant segment cannot replace a merely similar interim.
- */
-function hasHighTextOverlap(left: string, right: string): boolean {
-  const maxLength = Math.max(left.length, right.length)
-
-  if (maxLength < 160) {
-    return false
-  }
-
-  const maxEdits = Math.max(1, Math.min(32, Math.floor(maxLength * 0.02)))
-
-  if (Math.abs(left.length - right.length) > maxEdits) {
-    return false
-  }
-
-  const [shorter, longer] = left.length < right.length ? [left, right] : [right, left]
-
-  let previous = Array.from({ length: shorter.length + 1 }, (_, index) =>
-    index <= maxEdits ? index : Number.POSITIVE_INFINITY
-  )
-
-  let current = new Array<number>(shorter.length + 1).fill(Number.POSITIVE_INFINITY)
-
-  for (let longerIndex = 1; longerIndex <= longer.length; longerIndex += 1) {
-    const start = Math.max(1, longerIndex - maxEdits)
-    const end = Math.min(shorter.length, longerIndex + maxEdits)
-    current.fill(Number.POSITIVE_INFINITY, start, end + 1)
-    current[start - 1] = start === 1 ? longerIndex : Number.POSITIVE_INFINITY
-
-    let rowMinimum = Number.POSITIVE_INFINITY
-
-    for (let shorterIndex = start; shorterIndex <= end; shorterIndex += 1) {
-      current[shorterIndex] = Math.min(
-        previous[shorterIndex] + 1,
-        current[shorterIndex - 1] + 1,
-        previous[shorterIndex - 1] + Number(longer[longerIndex - 1] !== shorter[shorterIndex - 1])
-      )
-      rowMinimum = Math.min(rowMinimum, current[shorterIndex])
-    }
-
-    if (rowMinimum > maxEdits) {
-      return false
-    }
-
-    const nextPrevious = current
-    current = previous
-    previous = nextPrevious
-  }
-
-  return previous[shorter.length] <= maxEdits
-}
 
 export function useMessageStream({
   activeGatewayProfile = 'default',
@@ -678,6 +630,10 @@ export function useMessageStream({
 
         let nextMessages = state.messages
 
+        if (isToolOnlyInterimReplay(nextMessages, streamId, authoritativeText, state.interimBoundaryPending, sessionId)) {
+          return state
+        }
+
         if (streamId && nextMessages.some(m => m.id === streamId)) {
           // Seal the streaming bubble in place, marked interim so it renders
           // without an action footer (see ChatMessage.interim).
@@ -700,8 +656,32 @@ export function useMessageStream({
           // reply twice (#120104). When this occurrence's newest visible
           // assistant row already carries the same text — including a skewed
           // duplicate landing after the turn settled — refresh it in place.
-          const lastUserIndex = nextMessages.findLastIndex(message => message.role === 'user')
+          const lastUserIndex = currentResponseUserIndex(
+            nextMessages, sessionId, Boolean(streamId || state.sawAssistantPayload || state.interimBoundaryPending)
+          )
+
           const normalizedText = authoritativeText.replace(/\s+/g, ' ').trim()
+
+          // Hydration folds several persisted commentary rows into one bubble.
+          // A replayed seal names one source text part, not the whole fold; do
+          // not append it again or replace the fold's other text and tool parts.
+          const coveredByHistory = nextMessages.some(
+            (message, index) =>
+              index > lastUserIndex &&
+              message.role === 'assistant' &&
+              message.durableComplete === false &&
+              !message.hidden &&
+              message.parts.some(
+                part =>
+                  part.type === 'text' &&
+                  part.sourceRowId !== undefined &&
+                  part.text.replace(/\s+/g, ' ').trim() === normalizedText
+              )
+          )
+
+          if (coveredByHistory) {
+            return streamId ? { ...state, streamId: null } : state
+          }
 
           const prevSameText = nextMessages.findLast(
             (message, index) =>
@@ -903,9 +883,7 @@ export function useMessageStream({
         // turn completing without deltas still starts its own occurrence.
         const hasCurrentResponse = Boolean(streamId || state.sawAssistantPayload || interimBoundaryPending)
 
-        const lastUserIndex = prev.findLastIndex(
-          message => message.role === 'user' && !(hasCurrentResponse && message.id === `user-queued-${sessionId}`)
-        )
+        const lastUserIndex = currentResponseUserIndex(prev, sessionId, hasCurrentResponse)
 
         // A redirect reserves its correction row below the live stream without
         // sealing it, so a still-pending stream row above the last user message
@@ -928,6 +906,9 @@ export function useMessageStream({
           interimBoundaryPending
         })
 
+        const persistedFinalIndex =
+          streamIndex >= 0 ? -1 : persistedFinalBubbleIndex(prev, lastUserIndex, persistedTurn?.final_assistant_row_id)
+
         if (streamIndex >= 0) {
           collapsed =
             collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
@@ -941,6 +922,8 @@ export function useMessageStream({
               finalText
             })
           nextMessages = collapsed?.messages ?? settleAt(streamIndex)
+        } else if (persistedFinalIndex >= 0) {
+          nextMessages = settleAt(persistedFinalIndex)
         } else {
           const fallbackIndex = prev.findLastIndex(
             (message, index) => index > lastUserIndex && message.role === 'assistant' && !message.hidden
@@ -963,15 +946,7 @@ export function useMessageStream({
             // the final may add a trailing delta, so accept high overlap.
             // (mergeFinalAssistantText, via completeMessage, does the real
             // text merge — replaces the interim's text with the full final.)
-            const finalContinuesInterim = Boolean(
-              existing.interim &&
-              finalText &&
-              existingText &&
-              (finalText === existingText ||
-                finalText.startsWith(existingText) ||
-                existingText.startsWith(finalText) ||
-                hasHighTextOverlap(finalText, existingText))
-            )
+            const finalContinuesInterim = continuesInterimResponse(existing.interim, finalText, existingText)
 
             // A bare `error` event (e.g. the agent build failing) already
             // painted this turn's error card; the turn's terminal error frame
@@ -1086,7 +1061,8 @@ export function useMessageStream({
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
 
-        const sameTurnId = collapsed?.keptId ?? (streamIndex >= 0 ? streamId : null)
+        const sameTurnIndex = streamIndex >= 0 ? streamIndex : persistedFinalIndex
+        const sameTurnId = collapsed?.keptId ?? (sameTurnIndex >= 0 ? prev[sameTurnIndex].id : null)
 
         const sameTurnAssistant = sameTurnId
           ? nextMessages.find(m => m.id === sameTurnId)
