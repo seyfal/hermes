@@ -70,7 +70,7 @@ import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
-import { useComposerMetrics } from './hooks/use-composer-metrics'
+import { useComposerMetricElements, useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
 import { useComposerQueue } from './hooks/use-composer-queue'
@@ -233,11 +233,8 @@ export function ChatBar({
   // renders them as the pill strip at the top of the overlay lane.
   useComposerMicroActions(statusSessionId, busy)
 
-  const composerRef = useRef<HTMLFormElement | null>(null)
-  // The dock wraps the strips + status stack + composer; the thread's bottom
-  // clearance measures this, while the pop-out drag still tracks the composer.
-  const composerDockRef = useRef<HTMLDivElement | null>(null)
-  const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
+  // Measure the full dock footprint separately from the floating composer.
+  const { composerRef, composerDockRef, composerSurfaceRef } = useComposerMetricElements()
 
   // Pop-out engine: docked↔floating state, dock/float/toggle, drag gestures, and
   // the on-screen re-clamp. Secondary windows can't pop out.
@@ -409,7 +406,9 @@ export function ChatBar({
     composerRef,
     composerSurfaceRef,
     editorRef,
-    poppedOut
+    poppedOut,
+    running: busy,
+    surfaceKey: focusKey
   })
 
   const hasComposerPayload = hasText || attachments.length > 0

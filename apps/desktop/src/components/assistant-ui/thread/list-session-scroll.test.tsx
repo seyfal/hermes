@@ -65,6 +65,15 @@ async function settleScroll(ticks = 3) {
   })
 }
 
+function mockReadingBlock(contentTop: () => number) {
+  return vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const viewport = this.closest<HTMLElement>('[data-slot="aui_thread-viewport"]')
+    const top = this.matches('[data-slot="aui_message-group"], p') ? contentTop() - (viewport?.scrollTop ?? 0) : 0
+
+    return { top, bottom: top + 100, height: 100, width: 500, left: 0, right: 500, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+  })
+}
+
 const createdAt = new Date('2026-08-01T00:00:00.000Z')
 
 function sessionMessages(key: string, turns = 1): ThreadMessage[] {
@@ -497,6 +506,8 @@ describe('list session-scroll restore', () => {
   })
 
   it.each([0, 800])('preserves position through repeated reveals with late resize (offset %i)', async offset => {
+    // This fixture models growth above the visible text, not below it.
+    const rects = mockReadingBlock(() => scrollHeightValue - CLIENT_H - offset + 100)
     const previousObserver = globalThis.ResizeObserver
     const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
     vi.stubGlobal(
@@ -619,6 +630,7 @@ describe('list session-scroll restore', () => {
       }
     } finally {
       unmount()
+      rects.mockRestore()
       vi.stubGlobal('ResizeObserver', previousObserver)
     }
   })
@@ -808,7 +820,7 @@ describe('list session-scroll restore', () => {
     }
 
     act(() => window.dispatchEvent(new Event('beforeunload')))
-    expect(getThreadScrollPosition('lost')).toEqual({ kind: 'offset', fromBottom: SCROLL_H - CLIENT_H })
+    expect(getThreadScrollPosition('lost')).toEqual({ kind: 'offset', fromBottom: 9000 })
     expect(viewportEl(container).scrollTop).toBe(0)
 
     if (outcome === 'failed') {
@@ -837,6 +849,7 @@ describe('list session-scroll restore', () => {
   })
 
   it('captures the current reader at async page arrival and ignores an outgoing page after switching', async () => {
+    const rects = mockReadingBlock(() => scrollHeightValue - SCROLL_H + 900)
     let finish!: (applied: boolean) => void
     let capture: (() => void) | undefined
 
@@ -883,6 +896,7 @@ describe('list session-scroll restore', () => {
     })
     await settleScroll(10)
     expect(vp.scrollTop).toBe(nextTop)
+    rects.mockRestore()
   })
 
   it('waits for a history page before requesting another or spending the restore budget', async () => {

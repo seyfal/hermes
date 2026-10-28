@@ -1,10 +1,10 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { act, render } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { setActiveProfile } from '@/store/profile'
-import { saveThreadScrollPosition, threadScrollTargetTop } from '@/store/thread-scroll'
+import { saveThreadScrollPosition } from '@/store/thread-scroll'
 
 import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
 
@@ -67,6 +67,7 @@ const CLEARANCE_SLOT = 'aui_composer-clearance'
 let viewportScrollHeight = SCROLL_H
 let viewportClientHeight = CLIENT_H
 let clearanceHeight = 120
+let growthAbove = 0
 
 Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
   configurable: true,
@@ -89,11 +90,21 @@ beforeEach(() => {
   viewportScrollHeight = SCROLL_H
   viewportClientHeight = CLIENT_H
   clearanceHeight = 120
+  growthAbove = 0
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const vp = this.closest<HTMLElement>('[data-slot="aui_thread-viewport"]')
+    const row = this.matches('[data-slot="aui_message-group"], p')
+    const top = row ? SCROLL_H - CLIENT_H - FROM_BOTTOM + 100 + growthAbove - (vp?.scrollTop ?? 0) : 0
+
+    return { top, bottom: top + 100, height: 100, width: 500, left: 0, right: 500, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+  })
   observers.clear()
   window.localStorage.clear()
   setActiveProfile('default')
   rescopeConnectionScopedStores(null)
 })
+
+afterEach(() => vi.restoreAllMocks())
 
 function viewportEl(container: HTMLElement): HTMLElement {
   const el = container.querySelector(`[data-slot="${VIEWPORT_SLOT}"]`) as HTMLElement | null
@@ -195,16 +206,13 @@ describe('list post-settle restore vs composer-only resize', () => {
     expect(vp.scrollTop).toBe(restoredTop)
     expect(container.querySelector('[data-slot="aui_user-message-root"]')).toBe(userRoot)
 
-    // CONTROL: real transcript growth must still re-pin the frozen fromBottom.
+    // CONTROL: growth above the measured row moves it by 600, not by the
+    // unrelated clearance/viewport changes that occurred below the reader.
+    growthAbove = 600
     viewportScrollHeight = SCROLL_H + 80 + 600
     fireContentResizes()
 
-    expect(vp.scrollTop).toBe(
-      threadScrollTargetTop(
-        { fromBottom: FROM_BOTTOM, kind: 'offset' },
-        { clientHeight: viewportClientHeight, scrollHeight: viewportScrollHeight }
-      )
-    )
+    expect(vp.scrollTop).toBe(restoredTop + growthAbove)
   })
 
   it('a genuine scroll cancels a settled bottom restore, so a later resize tick cannot yank the view back', async () => {
