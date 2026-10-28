@@ -34,7 +34,10 @@ def test_image_generations_keep_authored_occurrences_and_tool_history(tmp_path, 
     try:
         shown = db.get_messages("s", include_compacted=True)
         assert [m["message_uid"] for m in shown if m["role"] == "user"] == ["ask", "fresh"]
-        assert [m["content"] for m in shown if m["role"] == "tool"] == ["full result", "stub"]
+        # An indexed read paints the compacted tool result once, as its archived original; a read-only
+        # legacy snapshot without slots shows both copies.
+        tools = ["full result", "stub"] if read_only else ["full result"]
+        assert [m["content"] for m in shown if m["role"] == "tool"] == tools
         assert db.display_message_count("s") == len(shown)
         assert [m for i in range(len(shown)) for m in db.get_messages(
             "s", include_compacted=True, limit=1, offset=i)] == shown

@@ -55,8 +55,10 @@ def test_prompt_occurrence_is_folded_before_all_display_pages(tmp_path, read_onl
         assert [m["id"] for m in pages] == [m["id"] for m in whole]
         assert db.display_message_count("prompt") == len(whole)
         assert db.get_messages("prompt", include_compacted=True, latest=True, limit=3) == whole[-3:]
-        assert [(m["id"], m["content"]) for m in whole if m["role"] == "tool"] == [
-            (m["id"], m["content"]) for m in raw if m["role"] == "tool"]
+        tools = [(m["id"], m["content"]) for m in raw if m["role"] == "tool"]
+        # An indexed read paints a compacted tool result once, as its archived original; a legacy
+        # snapshot without slots shows every copy.
+        assert [(m["id"], m["content"]) for m in whole if m["role"] == "tool"] == (tools if read_only else tools[:1])
         assert [(m["id"], m["content"]) for m in whole if m["role"] == "assistant"] == [
             (m["id"], m["content"]) for m in raw if m["role"] == "assistant"]
         assert db.get_messages("prompt", include_inactive=True) == raw
