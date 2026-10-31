@@ -151,6 +151,8 @@ def perform_api_call(
                 bool(agent._pending_redirect) if _redirect_lock is not None
                 else agent._has_pending_redirect()
             )
+    from agent.agent_runtime_helpers_auth import reset_auth_recovery
+    reset_auth_recovery(agent)
     if _redirect_crossed_response:
         # Response and redirect can cross threads: discard the now-stale
         # response and rebuild from the correction rather than lose it.
