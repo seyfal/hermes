@@ -6,6 +6,7 @@ import { isTodoToolName, parseTodos } from '@/lib/todos'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage, StoredToolCallLabels } from '@/types/hermes'
 
+import { storedPartIdentity } from './display-identity'
 import type { ChatMessage, ChatMessagePart, GatewayEventPayload } from './types'
 
 function toolId(payload: GatewayEventPayload | undefined): string {
@@ -933,6 +934,7 @@ export function applyStoredToolResultToParts(
   const existing = next[partIndex]
   next[partIndex] = {
     ...existing,
+    ...storedPartIdentity(toolMessage, existing),
     completedAt: toolMessage.timestamp,
     storedResultToolName: toolName,
     result: parseStoredToolResult(content),
@@ -959,6 +961,7 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
     toolCallId: toolMessage.tool_call_id || `stored-tool-message-${fallbackIndex}`,
     toolName: name,
     unpairedStoredToolResult: true,
+    ...storedPartIdentity(toolMessage),
     args: args as never,
     argsText: Object.keys(args).length ? JSON.stringify(args) : '',
     timestamp: toolMessage.timestamp,
