@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from agent.credential_pool import PooledCredential
 
 from agent.retry_utils import reset_delay_from_message
 
@@ -56,3 +59,15 @@ def _normalize_error_context(error_context: Optional[dict[str, Any]]) -> dict[st
     if parsed_reset_at is not None:
         normalized["reset_at"] = parsed_reset_at
     return normalized
+
+
+def token_expires_at(entry: PooledCredential) -> Optional[float]:
+    """When a pool entry's access token expires (epoch seconds), from the row's own expiry fields
+    or, for a JWT (Codex), its ``exp`` claim; None when nothing says. No network, no refresh."""
+    for value in (entry.expires_at_ms, entry.expires_at):
+        expires = _parse_absolute_timestamp(value)
+        if expires is not None:
+            return expires
+    from hermes_cli.auth_constants import _decode_jwt_claims
+
+    return _parse_absolute_timestamp(_decode_jwt_claims(entry.access_token).get("exp"))
