@@ -10,6 +10,7 @@ from agent.model_metadata import CHARS_PER_TOKEN
 PINNED_THRESHOLDS: dict[str, float] = {"read_file": float("inf")}
 
 # Single source of truth for the defaults; tool_result_storage.py imports these.
+# Config: ``tool_budget.result_size_chars`` / ``tool_budget.turn_budget_chars``.
 DEFAULT_RESULT_SIZE_CHARS: int = 100_000
 DEFAULT_TURN_BUDGET_CHARS: int = 200_000
 DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
@@ -20,26 +21,6 @@ DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
 DEFAULT_MCP_RESULT_SIZE_CHARS: int = 50_000
 # Same prefix the untrusted-content wrapper keys on (agent/tool_dispatch_helpers.py).
 MCP_TOOL_PREFIX: str = "mcp_"
-
-
-def _configured_mcp_result_size() -> int:
-    """Read ``tool_budget.mcp_result_size_chars`` via ``load_config_readonly`` (the
-    sanctioned path; raw config.yaml parsing outside owner modules is test-guarded).
-    Any error, missing key or non-positive value returns the built-in default.
-
-    The ``tool_budget:`` block name is shared with the wider configurable-caps proposal (#80508) so the two
-    can merge without a key rename.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-        data = load_config_readonly()
-        block = data.get("tool_budget") if isinstance(data, dict) else None
-        raw = block.get("mcp_result_size_chars") if isinstance(block, dict) else None
-        if raw is not None and int(raw) > 0:
-            return int(raw)
-    except Exception:
-        pass
-    return DEFAULT_MCP_RESULT_SIZE_CHARS
 
 
 @dataclass(frozen=True)
@@ -89,26 +70,59 @@ _MIN_RESULT_SIZE_CHARS: int = 8_000
 _MIN_TURN_BUDGET_CHARS: int = 16_000
 
 
+def _configured_tool_budget() -> tuple[int, int, int]:
+    """Return ``(result_size, turn_budget, mcp_result_size)`` chars from config.yaml's
+    ``tool_budget`` block, read via ``load_config_readonly`` (the sanctioned path; raw
+    config.yaml parsing outside owner modules is test-guarded). A missing, malformed or
+    non-positive key keeps its built-in default; the generic values never go below the
+    ``_MIN_*`` floors.
+
+    The ``tool_budget:`` block name is shared with the wider configurable-caps proposal (#80508) so the two
+    can merge without a key rename.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        data = load_config_readonly()
+        block = data.get("tool_budget") if isinstance(data, dict) else None
+    except Exception:  # health: allow BLE001 -- an unreadable config must not break tool dispatch; defaults apply
+        block = None
+    if not isinstance(block, dict):
+        block = {}
+
+    def chars(key: str, default: int, floor: int = 0) -> int:
+        try:
+            value = int(block.get(key))
+        except (TypeError, ValueError):
+            return default
+        return max(floor, value) if value > 0 else default
+
+    return (
+        chars("result_size_chars", DEFAULT_RESULT_SIZE_CHARS, _MIN_RESULT_SIZE_CHARS),
+        chars("turn_budget_chars", DEFAULT_TURN_BUDGET_CHARS, _MIN_TURN_BUDGET_CHARS),
+        chars("mcp_result_size_chars", DEFAULT_MCP_RESULT_SIZE_CHARS),
+    )
+
+
 def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     """Return a BudgetConfig scaled to the model's context window: the fixed
     defaults suit 200K+ models but on 65K one result/turn can fill the window.
-    The proportional value is clamped to the defaults as a CAP (large models
-    stay byte-identical) and floored so a usable preview always survives.
+    The proportional value is clamped to a CAP (``tool_budget.result_size_chars`` /
+    ``turn_budget_chars``, else the defaults, so large models stay byte-identical)
+    and floored so a usable preview always survives.
 
     The fixed defaults (100K result / 200K turn chars) are correct for large (200K+ token) models but blind
     to small ones: on a 65K-token model a single tool result persisted at the 100K-char threshold, or a
     200K-char turn budget (~50K tokens), can by itself approach or exceed the whole window and force an
     oversized request (#23767).
     """
-    mcp_result_size = _configured_mcp_result_size()
+    result_cap, turn_cap, mcp_result_size = _configured_tool_budget()
     if not context_length or context_length <= 0:
-        if mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS:
-            return DEFAULT_BUDGET
-        return BudgetConfig(mcp_result_size=mcp_result_size)
+        budget = BudgetConfig(default_result_size=result_cap, turn_budget=turn_cap, mcp_result_size=mcp_result_size)
+        return DEFAULT_BUDGET if budget == DEFAULT_BUDGET else budget
     window_chars = context_length * _CHARS_PER_TOKEN
     return BudgetConfig(
-        default_result_size=max(_MIN_RESULT_SIZE_CHARS, min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), DEFAULT_RESULT_SIZE_CHARS)),
-        turn_budget=max(_MIN_TURN_BUDGET_CHARS, min(int(window_chars * _PER_TURN_WINDOW_FRACTION), DEFAULT_TURN_BUDGET_CHARS)),
+        default_result_size=max(_MIN_RESULT_SIZE_CHARS, min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), result_cap)),
+        turn_budget=max(_MIN_TURN_BUDGET_CHARS, min(int(window_chars * _PER_TURN_WINDOW_FRACTION), turn_cap)),
         preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
         mcp_result_size=mcp_result_size,
     )
