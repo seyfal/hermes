@@ -177,8 +177,9 @@ def restore_local_session(authority, sid):
     adapter = local_adapter(authority)
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
+    from gateway.session_history_mount import is_history_mount
     live = authority.sessions.get(sid)
-    if live is None:
+    if live is None or is_history_mount(live):
         with store._lock:
             store._ensure_loaded_locked()
             current = store._entries.get(route)
@@ -194,7 +195,11 @@ def restore_local_session(authority, sid):
             entry.origin = source
             store._entries[route] = entry
         adapter.policies[chat_id] = policy
-        authority.sessions[sid] = LiveSession(source, route)
+        if live is None:
+            authority.sessions[sid] = LiveSession(source, route)
+        else:
+            # Preserve the mount's viewers and event stream, as restore_api_session does.
+            live.source, live.route, live.superseded, live.history_mount = source, route, False, False
         adapter.register_source(source)
     elif (not adapter.authorize_source(live.source)
           or live.source.to_dict() != source.to_dict()
