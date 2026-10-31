@@ -748,13 +748,45 @@ class TestPreApiCallSteerDrain:
             tool_row,
         ]
         agent.steer("focus on error handling")
-        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer())
+        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer(), 0)
         assert tool_row == before
         assert messages[-2] is tool_row
         assert messages[-1]["role"] == "user"
         assert STEER_MARKER_OPEN in messages[-1]["content"]
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None
+
+    def test_pre_api_drain_never_lands_inside_an_earlier_turn(self, tmp_path, monkeypatch):
+        """A steer pending when a turn's first request is prepared (accepted during turn-start
+        compaction, say) must not go after the newest tool result: that row belongs to the previous
+        turn, which was sent and cached in its stored order. It waits for this turn's first tool batch."""
+        from agent.turn_context import _reset_per_turn_agent_state
+        from agent.turn_iteration_prep import prepare_iteration
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        agent = AIAgent(session_db=SessionDB(db_path=tmp_path / "state.db"), model="test-model",
+                        provider="openai-compat", api_key="test", base_url="http://127.0.0.1:1/v1",
+                        quiet_mode=True, skip_context_files=True, skip_memory=True)
+        try:
+            _reset_per_turn_agent_state(agent)
+            messages = [
+                {"role": "user", "content": "first question"},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "tc1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "content": "output here", "tool_call_id": "tc1"},
+                {"role": "assistant", "content": "first answer"},
+                {"role": "user", "content": "next question"},
+            ]
+            before = [dict(m) for m in messages]
+            agent.steer("use the staging db")
+            prep = prepare_iteration(agent, messages=messages, api_call_count=1,
+                                     user_message="next question", current_turn_user_idx=4)
+            assert prep.messages == before
+            assert agent._pending_steer == "use the staging db"
+        finally:
+            agent._session_db.close()
 
 
 

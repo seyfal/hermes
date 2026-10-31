@@ -16,9 +16,9 @@ import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
 // the peers; the opener is relabelled visibly (the words stay, the exact trusted
 // shape does not). Genuine user lines are never touched. Keep in sync with
 // agent/prompt_builder.py::CONTROL_FRAME_OPENERS (the source of
-// gateway/hosted_room_discussion.py::_MEMBER_CONTROL_FRAME_RE).
+// agent/prompt_builder.py::relabel_control_frames).
 const MEMBER_CONTROL_FRAME_RE =
-  /\[(?=\/?OUT-OF-BAND USER MESSAGE|CONTEXT COMPACTION|CONTEXT SUMMARY\]|PRIOR CONTEXT|Runtime note:|System note:|System:|SYSTEM\]|IMPORTANT:|Planning state preserved|ASYNC DELEGATION)/gi
+  /\[(?=\/?OUT-OF-BAND USER MESSAGE|CONTEXT COMPACTION|CONTEXT SUMMARY\]|PRIOR CONTEXT|Runtime note:|System note:|System:|SYSTEM\]|IMPORTANT:|Planning state preserved|ASYNC DELEGATION|\/?PEER SESSION MESSAGE)/gi
 
 function relabelMemberControlFrames(text: string) {
   return text.replace(MEMBER_CONTROL_FRAME_RE, '[member-quoted ')

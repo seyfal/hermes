@@ -1,8 +1,9 @@
 """Outer-iteration bookkeeping for the conversation turn loop, in call order:
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
 ``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
-standalone user row after the newest tool result, run-budget wrap-up notice, tool_call
-argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair),
+standalone user row after this turn's newest tool result, run-budget wrap-up notice, tool_call
+argument sanitization, interrupt-placeholder ghost-row neutralisation, role-alternation repair,
+queued peer-session messages),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
 imports ``agent.conversation_loop`` at module level (cycle)."""
@@ -178,7 +179,8 @@ def prepare_iteration(
     # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
-        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+        _inject_steer_after_newest_tool_result(
+            agent, messages, _pre_api_steer, _turn_user_idx(messages, current_turn_user_idx, user_message))
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
@@ -252,6 +254,10 @@ def prepare_iteration(
             current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
         )
         current_turn_user_idx = _reanchored_idx
+    # Last, so a message a peer sent while the previous request ran goes out with this one.
+    from tools.peer_messaging_tool import deliver_peer_messages
+    deliver_peer_messages(agent, lambda row: _append_peer_message_row(
+        agent, messages, row, current_turn_user_idx if isinstance(current_turn_user_idx, int) else -1))
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
         current_turn_user_idx=current_turn_user_idx,
@@ -281,10 +287,22 @@ def _previous_tool_round(messages: Any) -> list:
     return []
 
 
-def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker as a standalone user row after the newest tool message; with no
-    tool message, put the text back so the post-tool-execution drain delivers it later."""
-    for _si in range(len(messages) - 1, -1, -1):
+def _turn_user_idx(messages: Any, current_turn_user_idx: Any, user_message: Any) -> int:
+    """Index of this turn's user row, re-derived when mid-turn compaction left the recorded one
+    stale; -1 when it cannot be told (no ``user_message``)."""
+    if _anchors_current_turn(messages, current_turn_user_idx, user_message):
+        return current_turn_user_idx
+    if user_message is None:
+        return -1
+    from agent.turn_context import reanchor_current_turn_user_idx
+    return reanchor_current_turn_user_idx(messages, user_message)
+
+
+def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str, turn_user_idx: int) -> None:
+    """Append the steer marker as a standalone user row after this turn's newest tool message;
+    with none yet, put the text back so the post-tool-execution drain delivers it later. A tool
+    message before ``turn_user_idx`` belongs to an earlier turn, which was sent (and cached) as stored."""
+    for _si in range(len(messages) - 1, turn_user_idx, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
             from agent.prompt_builder import steer_user_row
@@ -293,6 +311,30 @@ def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text
             return
     from agent.agent_runtime_helpers import _requeue_pending_steer
     _requeue_pending_steer(agent, steer_text)
+
+
+def _append_peer_message_row(agent: Any, messages: Any, row: dict, turn_user_idx: int) -> bool:
+    """Append a peer-message row when the transcript ends in this turn's question or tool results
+    (and rows already delivered after them) and store it; True once stored. The row is only ever
+    appended, so every earlier row stays as sent and cached; a transcript ending in anything else
+    (retry scaffolding, a continuation) leaves the message queued for the next request. Right after
+    the question the request carries two user rows, which the wire copy merges
+    (``drop_thinking_only_and_merge_users``) while both stay stored as written."""
+    from agent.prompt_builder import PEER_MESSAGE_DISPLAY_KIND, STEER_DISPLAY_KIND
+
+    end = len(messages)
+    while end - 1 > turn_user_idx and messages[end - 1].get("display_kind") in (
+            STEER_DISPLAY_KIND, PEER_MESSAGE_DISPLAY_KIND):
+        end -= 1
+    last = end - 1
+    at_question = turn_user_idx >= 0 and last == turn_user_idx
+    if not (at_question or (last > turn_user_idx and messages[last].get("role") == "tool")):
+        return False
+    messages.append(row)
+    if agent._flush_messages_to_session_db(messages) is False:
+        messages.pop()  # not stored: the mailbox keeps the message for the next request
+        return False
+    return True
 
 
 @dataclass

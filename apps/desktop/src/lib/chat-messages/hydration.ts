@@ -182,7 +182,9 @@ const NOTICE_DISPLAY_KINDS = [
   'auto_continue',
   'personality_switch',
   // Hermes closing a failed turn, not the model speaking.
-  'failed_turn'
+  'failed_turn',
+  // Another Hermes session wrote it (peer_send), not the user.
+  'peer_message'
 ] as const
 
 function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
