@@ -18,6 +18,12 @@ def place_credential_between_turns(agent: Any) -> None:
     """Under ``balanced``, put the session where its prompt cache is, or where the most headroom is
     once the cache went cold; under the other strategies, move back onto the credential a quota
     bench rotated the session off."""
+    from agent.credential_pool_usage_caps import leave_capped_credential_between_turns
+    try:
+        if leave_capped_credential_between_turns(agent):
+            return
+    except Exception:  # the turn still runs on the credential it has
+        logger.warning("Usage-cap check between turns failed", exc_info=True)
     pool = getattr(agent, "_credential_pool", None)
     if pool is not None and getattr(pool, "balanced", False) is True:
         agent._credential_pool_revert_id = None  # balanced decides on cache and headroom, not on history

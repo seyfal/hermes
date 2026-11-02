@@ -903,6 +903,14 @@ class ClientLifecycleMixin:
         if getattr(pool, "provider", None) != "anthropic":
             return False
         try:
+            # A credential benched for a spent or usage-capped window: move to the pool's pick now
+            # (a capped account keeps answering 200, so no 429 would ever move the session).
+            from agent.credential_pool_usage_caps import move_off_benched_credential
+            if move_off_benched_credential(self, pool):
+                return True
+        except Exception:
+            logger.debug("Moving off a benched Anthropic credential failed", exc_info=True)
+        try:
             key_hint = getattr(self, "api_key", None) or None
             credential_id = (pool.entry_id_for_api_key(key_hint) if key_hint else None) or getattr(
                 self, "_credential_pool_entry_id", None)

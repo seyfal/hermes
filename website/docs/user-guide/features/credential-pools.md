@@ -201,6 +201,35 @@ The view lives in the memory of the process that runs the sessions (the gateway,
 session it hosts). After a restart or `hermes update` it is empty, and sessions spread by count
 until their responses report the windows.
 
+### Keeping part of an account's quota for yourself {#usage-caps}
+
+`credential_pool_usage_caps` sets the highest share of a plan window Hermes may use on one pooled
+Claude account, so the rest stays free for claude.ai or Claude Code:
+
+```yaml
+credential_pool_usage_caps:
+  anthropic:
+    08a4e9:      # entry id from `hermes auth list anthropic`, or the entry's label
+      7d: 0.9    # stop at 90% of the weekly window (5h caps the 5-hour window)
+```
+
+Every Claude subscription response reports how much of each window is used, counting all use of
+the account, not only Hermes. When a response shows a capped window at or past its cap:
+
+- The account is benched until that window resets, like a window Anthropic reports spent. Every
+  strategy (including `balanced`) and every Hermes process skips it, whatever its priority, and
+  `hermes usage` shows it as limited.
+- A session on that account moves to another pooled account before its next request. The account
+  would keep answering normally until 100%, so Hermes does not wait for a rate-limit error.
+- If no other pooled account is usable, the turn in flight finishes on it and the next turn runs on
+  `fallback_providers`, as when the whole pool is exhausted.
+- Raising or removing the cap lifts the bench at the next selection; `hermes auth reset anthropic`
+  lifts it too.
+
+Values are shares between 0 and 1 (`0.9`, not `90`); an invalid window or value is ignored with a
+warning in the log. The cap is checked on responses, so an account Hermes has not used yet can go
+past its cap by the one request that reports it.
+
 ### Demoting a healthy credential {#demoting-a-healthy-credential}
 
 The pool only benches a credential *after* the provider rejects it (429/402/401). To keep a
