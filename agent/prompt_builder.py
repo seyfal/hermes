@@ -902,6 +902,24 @@ def _clear_backend_probe_cache() -> None:
     _BACKEND_PROBE_CACHE.clear()
 
 
+def _scratch_dir_hint(scratch) -> str:
+    """The prompt's scratch-dir line, true about TMPDIR. ``apply_scratch_tmp_env`` keeps a temp
+    dir the user or the OS already set (macOS launchd always sets ``/var/folders/...``), and the
+    local terminal inherits this process's TMPDIR, so ``$TMPDIR`` is the scratch dir only when
+    this process's TMPDIR resolves to it; otherwise the model is told to use the absolute path."""
+    tmpdir = os.environ.get("TMPDIR", "").strip()
+    try:
+        points_here = bool(tmpdir) and os.path.realpath(tmpdir) == os.path.realpath(str(scratch))
+    except (OSError, ValueError):
+        points_here = False
+    if points_here:
+        return (f"Scratch directory: {scratch} (TMPDIR points here; write temporary files "
+                "and probes there, never under the system temp dir; entries idle for 24h are pruned)")
+    return (f"Scratch directory: {scratch} (TMPDIR does NOT point here, so do not use $TMPDIR; write "
+            "temporary files and probes under this absolute path, never under the system temp dir; "
+            "entries idle for 24h are pruned)")
+
+
 def _local_host_hints() -> list[str]:
     """Host OS / home / cwd block for a local terminal backend (tools run on this host)."""
     import platform
@@ -920,8 +938,7 @@ def _local_host_hints() -> list[str]:
     # The model reaches for the system temp dir by reflex (tmpfs on most Linux hosts, fills RAM);
     # naming Hermes' scratch dir here is what makes the TMPDIR export a habit rather than a hidden default.
     try:
-        host_lines.append(f"Scratch directory: {get_scratch_dir()} (TMPDIR points here; write temporary files "
-                          "and probes there, never under the system temp dir; entries idle for 24h are pruned)")
+        host_lines.append(_scratch_dir_hint(get_scratch_dir()))
     except OSError:
         pass
     if not (sys.platform == "win32" and not is_wsl()):
