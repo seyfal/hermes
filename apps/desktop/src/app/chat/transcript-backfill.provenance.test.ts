@@ -1,6 +1,6 @@
-import { expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import type { SessionMessage } from '@/types/hermes'
 
 import {
@@ -116,4 +116,101 @@ it('replaces an unanchored compaction window and scopes identity to its source s
   expect(graftRefreshedTailOntoBackfill(fresh, previous)).toBe(fresh)
   const other = toChatMessages([{ ...row(50, 1), session_id: 'other' }])
   expect(mergeOlderTranscriptPage(previous, other)).toHaveLength(2)
+})
+
+describe('receipt-bound live turn against a stored page', () => {
+  const stored = (id: number, role: SessionMessage['role'], content: string, extra: Partial<SessionMessage> = {}) => ({
+    ...row(id, id, content),
+    role,
+    ...extra
+  })
+
+  const turn4 = [stored(1, 'user', 'question 4'), stored(2, 'assistant', 'answer 4')]
+  const turn5 = [stored(3, 'user', 'question 5'), stored(4, 'assistant', 'answer 5')]
+
+  // A settled live turn: the optimistic prompt bound to its stored row by the
+  // submit receipt and the stream bubble bound by `persisted_turn`
+  // (withPersistedIdentity). Neither carries a display identity.
+  const liveUser = (rowId: number, text = 'question 5'): ChatMessage => ({
+    id: 'user-1790000200000-abc',
+    role: 'user',
+    rowId,
+    parts: [{ type: 'text', text }]
+  })
+
+  const liveAssistant = (rowId: number, finalRowId = rowId, overrides: Partial<ChatMessage> = {}): ChatMessage => ({
+    id: 'assistant-stream-1790000200500-1',
+    role: 'assistant',
+    rowId,
+    pending: false,
+    interim: false,
+    durableComplete: true,
+    parts: [{ type: 'text', text: 'answer 5', sourceRowId: finalRowId }],
+    ...overrides
+  })
+
+  const texts = (messages: ChatMessage[]) => messages.map(message => `${message.role}:${chatMessageText(message)}`)
+
+  it('replaces the bound live turn with its stored rows instead of painting it twice', () => {
+    const window = [...toChatMessages(turn4), liveUser(3), liveAssistant(4)]
+    const fresh = toChatMessages([...turn4, ...turn5])
+    const merged = graftRefreshedTailOntoBackfill(fresh, window)
+
+    expect(merged).toHaveLength(4)
+    expect(texts(merged)).toEqual(['user:question 4', 'assistant:answer 4', 'user:question 5', 'assistant:answer 5'])
+    expect(merged).toEqual(fresh)
+  })
+
+  it('keeps one assistant bubble for a tool turn whose stored head row differs from the final row', () => {
+    const call = { id: 'call', type: 'function', function: { name: 'read_file', arguments: '{}' } }
+
+    const toolTurn = [
+      stored(3, 'user', 'question 5'),
+      stored(4, 'assistant', 'let me look', { tool_calls: [call] }),
+      stored(5, 'tool', 'file body', { tool_call_id: 'call' }),
+      stored(6, 'assistant', 'answer 5')
+    ]
+
+    const fresh = toChatMessages([...turn4, ...toolTurn])
+    const freshAssistant = fresh.filter(message => message.role === 'assistant').at(-1)!
+    // The page folds the turn into one bubble addressed by its head row.
+    expect(freshAssistant.rowId).toBe(4)
+
+    const window = [...toChatMessages(turn4), liveUser(3), liveAssistant(6, 6)]
+    const merged = graftRefreshedTailOntoBackfill(fresh, window)
+    const turn = merged.slice(merged.findIndex(message => chatMessageText(message) === 'question 5'))
+
+    expect(turn.filter(message => message.role === 'user')).toHaveLength(1)
+    expect(turn.filter(message => message.role === 'assistant')).toHaveLength(1)
+  })
+
+  it('keeps the live bubble while the receipt does not vouch for the whole turn', () => {
+    const window = [...toChatMessages(turn4), liveUser(3), liveAssistant(4, 4, { durableComplete: false })]
+    const merged = graftRefreshedTailOntoBackfill(toChatMessages([...turn4, ...turn5]), window)
+
+    expect(merged.some(message => message.id === 'assistant-stream-1790000200500-1')).toBe(true)
+    expect(merged.filter(message => message.role === 'user' && chatMessageText(message) === 'question 5')).toHaveLength(
+      1
+    )
+  })
+
+  it('still drops unbound live rows of a turn the page has stored', () => {
+    const unboundUser: ChatMessage = { ...liveUser(3), rowId: undefined }
+
+    const unboundAssistant: ChatMessage = {
+      ...liveAssistant(4),
+      rowId: undefined,
+      parts: [{ type: 'text', text: 'answer 5' }]
+    }
+
+    const window = [...toChatMessages(turn4), unboundUser, unboundAssistant]
+    const fresh = toChatMessages([...turn4, ...turn5])
+
+    expect(texts(graftRefreshedTailOntoBackfill(fresh, window))).toEqual([
+      'user:question 4',
+      'assistant:answer 4',
+      'user:question 5',
+      'assistant:answer 5'
+    ])
+  })
 })

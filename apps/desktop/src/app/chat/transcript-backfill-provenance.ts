@@ -21,6 +21,38 @@ export function transcriptSourceKeys(message: ChatMessage): string[] {
   return transcriptRowIds(message).map(row => `row:${row}`)
 }
 
+/**
+ * Every address a stored (fresh) row can be found under: its display
+ * identities and its physical source rows. A live row bound by the
+ * `persisted_turn` receipt has only `row:N` keys, so a page indexed by
+ * identity alone never finds it.
+ */
+function lookupKeys(message: ChatMessage): string[] {
+  return [...new Set([...messageDisplayIdentities(message), ...transcriptRowIds(message).map(row => `row:${row}`)])]
+}
+
+/**
+ * A receipt-bound live row (no display identity, rowId from `persisted_turn`)
+ * is covered when the page holds every row it names. An assistant bubble
+ * counts only once its terminal receipt says the whole turn is durable.
+ */
+function receiptBoundRowCovered(message: ChatMessage, bySource: Map<string, number>): boolean {
+  const rows = transcriptRowIds(message)
+
+  if (messageDisplayIdentities(message).length || message.error || !rows.length) {
+    return false
+  }
+
+  if (!rows.every(row => bySource.has(`row:${row}`))) {
+    return false
+  }
+
+  return (
+    message.role === 'user' ||
+    (message.role === 'assistant' && !message.pending && !message.interim && message.durableComplete === true)
+  )
+}
+
 export function sharesTranscriptSource(first: ChatMessage[], second: ChatMessage[]): boolean {
   const keys = new Set(first.flatMap(transcriptSourceKeys))
 
@@ -31,12 +63,14 @@ export function sharesTranscriptSource(first: ChatMessage[], second: ChatMessage
 export function mergeProvenancePage(fresh: ChatMessage[], previous: ChatMessage[], older = false): ChatMessage[] {
   const bySource = new Map<string, number>()
   fresh.forEach((message, index) => {
-    for (const key of transcriptSourceKeys(message)) {
+    for (const key of lookupKeys(message)) {
       bySource.set(key, index)
     }
   })
 
-  if (!sharesTranscriptSource(fresh, previous)) {
+  // Overlap is exactly "some previous row anchors in this page", including a
+  // receipt-bound live row that only the page's physical source rows address.
+  if (!previous.some(message => transcriptSourceKeys(message).some(key => bySource.has(key)))) {
     return older ? [...previous, ...fresh] : fresh
   }
 
@@ -57,11 +91,12 @@ export function mergeProvenancePage(fresh: ChatMessage[], previous: ChatMessage[
     }
 
     const complete =
-      keys.every(key => bySource.has(key)) &&
-      !message.error &&
-      message.parts.every(
-        part => part.sourceDisplayIdentities?.length && part.sourceDisplayIdentities.every(key => bySource.has(key))
-      )
+      receiptBoundRowCovered(message, bySource) ||
+      (keys.every(key => bySource.has(key)) &&
+        !message.error &&
+        message.parts.every(
+          part => part.sourceDisplayIdentities?.length && part.sourceDisplayIdentities.every(key => bySource.has(key))
+        ))
 
     if (!complete) {
       const parts = message.parts.filter(
