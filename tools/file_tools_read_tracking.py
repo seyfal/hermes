@@ -21,10 +21,12 @@ container is hard-capped (``_cap_read_tracker_data``) so long sessions stay smal
 import hashlib
 import logging
 import os
+import shlex
 import stat
 import threading
 import time
 
+from tools import file_state
 from tools.file_state import _evict_oldest
 from tools.file_tools_paths import _authoritative_workspace_root, _resolve_path_for_task
 
@@ -394,6 +396,110 @@ def _read_mtime_drifted(filepath: str, task_id: str) -> bool:
         return os.path.getmtime(resolved) != read_mtime
     except OSError:
         return False
+
+
+# Characters that make a command more than "cat these literal paths": pipes,
+# redirection, chaining, substitution, globbing, tilde/brace expansion, escapes.
+_CAT_SHELL_META = frozenset("|&;<>()$`*?[]{}~!#\\\n\r")
+# Flags that leave the bytes as-is (-u) or only number the lines (-n).
+_CAT_PLAIN_FLAGS = {"-n": True, "-u": False, "-nu": True, "-un": True}
+
+
+def _whole_file_cat_paths(command: str) -> tuple[list[str], bool] | None:
+    """``(paths, numbered)`` when *command* is a plain whole-file ``cat`` (optionally
+    ``-n``/``-u``, one or more literal paths), else ``None``. Anything that could show
+    less than every byte (head, tail, grep, sed -n, pipes, redirects, -s/-v/-b...) is
+    ``None``, so it never counts as a read."""
+    if not isinstance(command, str) or any(ch in _CAT_SHELL_META for ch in command):
+        return None
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if len(tokens) < 2 or tokens[0] != "cat":
+        return None
+    numbered, paths, options_done = False, [], False
+    for token in tokens[1:]:
+        if not options_done and token == "--":
+            options_done = True
+        elif not options_done and token.startswith("-"):
+            if token not in _CAT_PLAIN_FLAGS:
+                return None  # "-" (stdin) or a transforming flag
+            numbered = numbered or _CAT_PLAIN_FLAGS[token]
+        else:
+            paths.append(token)
+    return (paths, numbered) if paths else None
+
+
+def _number_lines(text: str) -> str:
+    """``cat -n`` of one stream: every line numbered ``%6d<TAB>``, a final unterminated line too."""
+    lines = text.split("\n")
+    tail = lines.pop()
+    rendered = "".join(f"{number:6d}\t{line}\n" for number, line in enumerate(lines, 1))
+    return rendered + (f"{len(lines) + 1:6d}\t{tail}" if tail else "")
+
+
+def _cat_renderings(texts: list[str], numbered: bool) -> set[str]:
+    """What ``cat`` may print for *texts*. ``-n`` numbers the concatenated stream (GNU), or each
+    file from 1 (BSD/macOS); either one shows every byte, so either counts."""
+    if not numbered:
+        return {"".join(texts)}
+    return {_number_lines("".join(texts)), "".join(_number_lines(text) for text in texts)}
+
+
+def record_terminal_full_reads(command: str, output: str, returncode, cwd, task_id: str) -> list[str]:
+    """Record a whole-file ``cat`` in the terminal as the read_file full read it is.
+
+    Without this, write_file refuses a file the model just saw in full through
+    ``cat FILE`` and the model re-reads and regenerates it. A path counts only when the
+    command is a plain ``cat`` (see ``_whole_file_cat_paths``), it exited 0, and the
+    exact text the model was shown equals the cat of the bytes on disk now, so any
+    truncation, redaction, ANSI stripping or a change since the cat leaves no baseline.
+    The output must also fit one read_file page (``file_read_max_chars``). The state
+    recorded is what a full read_file records (byte-hash baseline, read mtime, cross-agent
+    read stamp), so a later edit by anyone else still refuses the write. Host paths only:
+    the caller passes the local backend's command cwd. Returns the resolved paths recorded.
+    """
+    parsed = _whole_file_cat_paths(command)
+    if parsed is None or returncode != 0 or not isinstance(output, str):
+        return []
+    from tools.file_tools import _get_max_read_chars
+    max_chars = _get_max_read_chars()
+    if len(output) > max_chars:
+        return []
+    paths, numbered = parsed
+    task_id = task_id or "default"
+    snapshots = []
+    for path in paths:
+        if not os.path.isabs(path):
+            if not cwd:
+                return []
+            path = os.path.join(str(cwd), path)
+        resolved = _resolved_or_none(path, task_id)
+        if resolved is None:
+            return []
+        try:
+            st = os.stat(resolved)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > 4 * max_chars:
+                return []
+            with open(resolved, "rb") as stream:
+                data = stream.read()
+            text = data.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return []
+        snapshots.append((resolved, data, text))
+    shown = {rendering.strip() for rendering in _cat_renderings([text for _r, _d, text in snapshots], numbered)}
+    if output not in shown:
+        return []
+    recorded = []
+    for resolved, data, _text in snapshots:
+        _mark_full_write_baseline(resolved, task_id, hashlib.sha256(data).hexdigest())
+        if not _has_full_write_baseline(resolved, task_id):
+            continue  # the bytes moved after the comparison: no baseline, as for read_file
+        _update_read_timestamp(resolved, task_id)
+        file_state.record_read(task_id, resolved)
+        recorded.append(resolved)
+    return recorded
 
 
 def _check_file_staleness(filepath: str, task_id: str) -> str | None:
