@@ -241,6 +241,12 @@ def finalize_foreground_result(
     # redact_terminal_output runs the ENV pass (code_file=False) to mask opaque tokens with no vendor
     # prefix. Real prefixes, auth headers, JWTs, private keys are masked in both modes. See issue #43025.
     output = redact_terminal_output(output.strip(), command) if output else ""
+    if env_type == "local":
+        # A plain whole-file `cat` the model saw verbatim is a full read for the
+        # write_file guard (host paths only; see record_terminal_full_reads).
+        with _quiet("terminal full-read tracking"):
+            from tools.file_tools_read_tracking import record_terminal_full_reads
+            record_terminal_full_reads(command, output, returncode, command_cwd, task_id or "default")
 
     exit_note = _interpret_exit_code(command, returncode)
     failure_hint = _failure_hint(command, returncode, output, exit_note)
