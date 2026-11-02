@@ -1303,6 +1303,7 @@ DEFAULT_CONFIG = {
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
         "write_approval": False,
+        "write_approval_origins": [],  # [] = all origins; see skills.write_approval_origins
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
@@ -1467,6 +1468,9 @@ DEFAULT_CONFIG = {
         # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
         # pending, /skills diff <id>, /skills approve|reject <id>.
         "write_approval": False,
+        # Origins the gate applies to: [] = all; [background_review] = hold only the after-session
+        # review's and the curator's writes, let the session's own skill writes land at once.
+        "write_approval_origins": [],
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
