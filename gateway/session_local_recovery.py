@@ -177,8 +177,8 @@ def restore_local_session(authority, sid):
     adapter = local_adapter(authority)
     if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
-    live = authority.sessions.get(sid)
     from gateway.session_history_mount import is_history_mount
+    live = authority.sessions.get(sid)
     if live is None or is_history_mount(live):
         source = adapter.kept_source(source)
         with store._lock:
