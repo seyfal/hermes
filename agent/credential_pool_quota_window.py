@@ -71,15 +71,18 @@ def apply_spent_quota_window(context: dict[str, Any], headers: Any) -> None:
 
 class CredentialPoolQuotaWindowMixin:
     def token_quota_spent(self, token: str) -> bool:
-        """Whether *token* backs an entry benched for a spent window that has not reset yet. Closes
-        the paths that hand out a native Anthropic token without selecting it (env / borrowed)."""
+        """Whether *token* backs an entry benched for a spent (or usage-capped) window that has not
+        reset yet. Closes the paths that hand out a native Anthropic token without selecting it
+        (env / borrowed)."""
         from agent.credential_pool import STATUS_EXHAUSTED
+
+        from agent.credential_pool_usage_caps import USAGE_CAP_REASON
 
         now = time.time()
         with self._lock:
             return any(
                 e.runtime_api_key == token and e.last_status == STATUS_EXHAUSTED
-                and e.last_error_reason == QUOTA_EXHAUSTED_REASON
+                and e.last_error_reason in (QUOTA_EXHAUSTED_REASON, USAGE_CAP_REASON)
                 and (_parse_absolute_timestamp(e.last_error_reset_at) or 0) > now
                 for e in self._entries
             )
@@ -93,8 +96,10 @@ class CredentialPoolQuotaWindowMixin:
 
     def mark_quota_exhausted(
         self, *, reset_at: float, credential_id: Optional[str] = None, api_key_hint: Optional[str] = None,
+        reason: str = QUOTA_EXHAUSTED_REASON, message: Optional[str] = None,
     ) -> bool:
         """Bench the entry that served a spent-window response until *reset_at* (persisted).
+        *reason* ``usage_cap`` (with its *message*) is a window at its configured cap, not spent.
 
         No rotation: the request that carried the headers already succeeded. The next request
         selects past the bench, and a 429 on this entry meanwhile takes the pre-exhausted fast
@@ -114,18 +119,19 @@ class CredentialPoolQuotaWindowMixin:
             ]
             stale = [
                 e for e in targets
-                if not (e.last_status == STATUS_EXHAUSTED and _parse_absolute_timestamp(e.last_error_reset_at) == reset_at)
+                if not (e.last_status == STATUS_EXHAUSTED and _parse_absolute_timestamp(e.last_error_reset_at) == reset_at
+                        and e.last_error_reason in (reason, QUOTA_EXHAUSTED_REASON))
             ]
             if not stale:
                 return False
+            context = {"reason": reason, "reset_at": reset_at, **({"message": message} if message else {})}
             for target in stale:
-                self._mark_exhausted(
-                    target, 429, {"reason": QUOTA_EXHAUSTED_REASON, "reset_at": reset_at}, persist=False,
-                )
+                self._mark_exhausted(target, 429, context, persist=False)
             self._persist()
             logger.info(
-                "credential pool: %s subscription window spent; benched %d entr%s until %s",
-                entry.label or entry.id[:8], len(stale), "y" if len(stale) == 1 else "ies",
+                "credential pool: %s subscription window %s; benched %d entr%s until %s",
+                entry.label or entry.id[:8], "spent" if reason == QUOTA_EXHAUSTED_REASON else "at its usage cap",
+                len(stale), "y" if len(stale) == 1 else "ies",
                 time.strftime("%Y-%m-%d %H:%M", time.localtime(reset_at)),
             )
             return True
