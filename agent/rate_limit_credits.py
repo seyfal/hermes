@@ -81,7 +81,8 @@ class RateLimitCreditsMixin:
         observe_agent_response(self, http_response)
 
     def _bench_spent_subscription_window(self, http_response: Any) -> None:
-        """Record a spent Anthropic plan window on the pool entry that served this response, so
+        """Record a spent Anthropic plan window, or one at its configured usage cap
+        (``credential_pool_usage_caps``), on the pool entry that served this response, so
         selection skips it until the reset. Fail-open."""
         headers = _response_headers(http_response)
         pool = getattr(self, "_credential_pool", None)
@@ -89,16 +90,17 @@ class RateLimitCreditsMixin:
             return
         try:
             from agent.credential_pool_quota_window import spent_quota_reset_at
+            from agent.credential_pool_usage_caps import bench_capped_entry
+            raw_id = getattr(self, "_credential_pool_entry_id", None)
+            credential_id = raw_id if isinstance(raw_id, str) and raw_id else None
+            # The token this request actually sent: the per-request credential refresh can swap
+            # it under a stale ``api_key`` / entry id, and the pool trusts the key when they disagree.
+            api_key_hint = getattr(self, "_anthropic_api_key", None) or getattr(self, "api_key", None) or None
             reset_at = spent_quota_reset_at(headers)
             if reset_at is None:
+                bench_capped_entry(pool, credential_id, api_key_hint, headers)
                 return
-            raw_id = getattr(self, "_credential_pool_entry_id", None)
-            pool.mark_quota_exhausted(
-                reset_at=reset_at, credential_id=raw_id if isinstance(raw_id, str) and raw_id else None,
-                # The token this request actually sent: the per-request credential refresh can swap
-                # it under a stale ``api_key`` / entry id, and the pool trusts the key when they disagree.
-                api_key_hint=getattr(self, "_anthropic_api_key", None) or getattr(self, "api_key", None) or None,
-            )
+            pool.mark_quota_exhausted(reset_at=reset_at, credential_id=credential_id, api_key_hint=api_key_hint)
         except Exception:
             logger.debug("spent subscription window bench failed", exc_info=True)
 

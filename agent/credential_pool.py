@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_balanced import STRATEGY_BALANCED, CredentialPoolBalancedMixin
-from agent.credential_pool_cooldown import _exhausted_ttl
+from agent.credential_pool_cooldown import FAILURE_REASON_BILLING_UNVERIFIED, _exhausted_until
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 from agent.credential_pool_priority import _next_priority, _normalize_pool_priorities, adopt_disk_priorities
 from agent.credential_pool_quota_window import CredentialPoolQuotaWindowMixin
@@ -364,21 +364,6 @@ def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
     if state_ts is None:
         return False
     return state_ts < entry_ts
-
-
-def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
-    if entry.last_status != STATUS_EXHAUSTED:
-        return None
-    reset_at = _parse_absolute_timestamp(entry.last_error_reset_at)
-    if reset_at is not None:
-        return reset_at
-    if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(
-            entry.last_error_code,
-            sole_credential=sole_credential,
-            failure_reason=entry.failure_reason,
-        )
-    return None
 
 
 # --- Custom (OpenAI-compatible) endpoint pool keys ---
