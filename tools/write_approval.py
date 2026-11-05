@@ -7,6 +7,11 @@ origin (**foreground** turn or **background_review** fork). ``false`` (default)
 writes freely; ``true`` never commits directly: it prompts inline (memory,
 interactive CLI only) or **stages** the write under
 ``<HERMES_HOME>/pending/{memory,skills}/<id>.json`` for out-of-band review.
+
+``<subsystem>.write_approval_origins`` narrows the gate to some write origins: a list of
+``foreground`` and/or ``background_review``. Unset or empty means every origin (the default).
+``skills.write_approval_origins: [background_review]`` holds only the after-session review's
+and the curator's skill writes for approval, while the session's own skill writes land at once.
 """
 
 from __future__ import annotations
@@ -38,6 +43,13 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 CONFIG_KEY = "write_approval"
 _TRUTHY_STRINGS = frozenset({"on", "true", "yes", "1", "approve", "enabled"})
 
+# Optional scope: which write origins the gate applies to (unset/empty = all).
+ORIGINS_KEY = "write_approval_origins"
+FOREGROUND = "foreground"
+BACKGROUND_REVIEW = "background_review"
+_ORIGIN_ALIASES = {"foreground": FOREGROUND, "assistant_tool": FOREGROUND, "background_review": BACKGROUND_REVIEW,
+                   "background": BACKGROUND_REVIEW, "review": BACKGROUND_REVIEW, "curator": BACKGROUND_REVIEW}
+
 
 # --- Config resolution ---
 
@@ -50,6 +62,42 @@ def write_approval_enabled(subsystem: str) -> bool:
         return _normalize_enabled(cfg_get(load_config(), subsystem, CONFIG_KEY, default=False))
     except Exception:
         return False
+
+
+def write_approval_origins(subsystem: str) -> Optional[frozenset[str]]:
+    """Origins ``<subsystem>.write_approval_origins`` scopes the gate to, or None for every origin.
+
+    Accepts a list or a comma/space separated string of ``foreground`` / ``background_review``
+    (aliases: ``assistant_tool``; ``background``, ``review``, ``curator``). Fails closed: an
+    unreadable config or any unknown name gates every origin, so a typo never opens the gate."""
+    if subsystem not in _SUBSYSTEMS:
+        return None
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        raw = cfg_get(load_config(), subsystem, ORIGINS_KEY, default=None)
+    except Exception:
+        return None
+    if isinstance(raw, str):
+        raw = [x for x in re.split(r"[,\s]+", raw) if x]
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None
+    out = set()
+    for item in raw:
+        name = _ORIGIN_ALIASES.get(str(item).strip().lower())
+        if name is None:
+            logger.warning("Unknown %s.%s entry %r: gating every origin", subsystem, ORIGINS_KEY, item)
+            return None
+        out.add(name)
+    return frozenset(out)
+
+
+def origin_in_scope(subsystem: str, origin: Optional[str] = None) -> bool:
+    """Whether the gate applies to a write from ``origin`` (default: the current one)."""
+    scope = write_approval_origins(subsystem)
+    if scope is None:
+        return True
+    origin = origin if origin is not None else current_origin()
+    return (BACKGROUND_REVIEW if origin == BACKGROUND_REVIEW else FOREGROUND) in scope
 
 
 def _normalize_enabled(value: Any) -> bool:
@@ -199,11 +247,14 @@ def _staged(subsystem: str) -> GateDecision:
 
 
 def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: str = "") -> GateDecision:
-    """Decide what to do with a pending write: gate off → allow; gate on + skills (any origin) or
+    """Decide what to do with a pending write: gate off, or this origin outside
+    ``write_approval_origins`` → allow; gate on + skills (any origin in scope) or
     background → stage; gate on + memory + foreground → inline prompt when an interactive channel
     exists, else stage. The gate only ever delays a write, never silently refuses it; ``blocked``
     is produced only when the user actively denies the inline prompt."""
     if not write_approval_enabled(subsystem):
+        return GateDecision(allow=True)
+    if not origin_in_scope(subsystem):  # write_approval_origins leaves this origin out
         return GateDecision(allow=True)
     # Skills are too big to review inline; a background write runs in a daemon thread with no user.
     if subsystem == SKILLS or current_origin() == "background_review":

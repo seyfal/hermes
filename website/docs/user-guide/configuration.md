@@ -904,7 +904,10 @@ Independent of the content scanner above, `skills.write_approval` gates **every*
 ```yaml
 skills:
   write_approval: false   # false = write freely (default) | true = stage every write for review
+  write_approval_origins: []   # [] = gate every origin (default) | [background_review] = gate only background writes
 ```
+
+`skills.write_approval_origins` limits the gate to some write origins: `foreground` (the session's own `skill_manage` calls) and `background_review` (the after-session review and the curator). With `[background_review]`, background skill edits wait for your approval while the skills you edit in a session land at once. An unknown name gates every origin. `/skills` names the scope in its status line.
 
 When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
 
