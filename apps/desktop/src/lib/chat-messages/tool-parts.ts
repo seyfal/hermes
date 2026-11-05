@@ -1080,7 +1080,14 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       continue
     }
 
-    messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
+    const rowId = toolMessage.row_id ?? (typeof toolMessage.id === 'number' ? toolMessage.id : undefined)
+
+    messages[i] = {
+      ...message,
+      parts,
+      serverRowSpan: (message.serverRowSpan ?? 1) + 1,
+      ...(rowId === undefined ? {} : { foldedRowIds: [...(message.foldedRowIds ?? []), rowId] })
+    }
 
     return true
   }

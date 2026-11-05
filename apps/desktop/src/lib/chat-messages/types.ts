@@ -79,6 +79,10 @@ export type ChatMessage = {
    *  counted in backend rows, so anything that rewinds that offset must convert
    *  through this. Absent means one row. */
   serverRowSpan?: number
+  /** Stored rows the hydration fold merged into this message besides `rowId`
+   *  (tool-call rows, tool results, the folded reply), in stored order. A page
+   *  that starts inside a turn addresses its partial fold by one of these. */
+  foldedRowIds?: number[]
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
 }

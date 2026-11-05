@@ -4,8 +4,9 @@ import { isLiveTailReplyId } from '@/lib/spoken-reply'
 /** A hydrated bubble can contain several source rows, including the final reply. */
 export function transcriptRowIds(message: ChatMessage): number[] {
   const ids = message.parts.flatMap(part => (part.sourceRowId !== undefined ? [part.sourceRowId] : []))
+  const folded = message.foldedRowIds ?? []
 
-  return message.rowId === undefined ? ids : [message.rowId, ...ids]
+  return message.rowId === undefined ? [...folded, ...ids] : [message.rowId, ...folded, ...ids]
 }
 
 /** Unknown identity is not a match, but remains eligible for legacy live projection. */
