@@ -72,9 +72,9 @@ def test_the_worker_history_read_agrees_with_the_owner_display_read(tmp_path):
         # Rotated: the parent keeps its copies active, the child's copies of GONE/NO are rewound.
         assert db.try_acquire_compression_lock('s', 'fixture')
         try:
+            carried = db.get_messages_as_conversation('s')[2:]
             db.publish_compression_child(parent_session_id='s', child_session_id='c', source='test', messages=[
-                {'role': 'user', 'content': 'SUMMARY'}, {'role': 'user', 'content': 'GONE'},
-                {'role': 'assistant', 'content': 'NO'}], compression_lock_holder='fixture')
+                {'role': 'user', 'content': 'SUMMARY'}, *carried], compression_lock_holder='fixture')
         finally:
             db.release_compression_lock('s', 'fixture')
         db.rewind_to_message('c', next(m['id'] for m in db.get_messages('c') if m['content'] == 'GONE'))

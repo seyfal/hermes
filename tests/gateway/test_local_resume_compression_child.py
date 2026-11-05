@@ -22,7 +22,8 @@ def _runner(tmp_path):
 
 
 def _compress(db, parent, child, source):
-    history = [{'role': 'user', 'content': 'retained'}, {'role': 'assistant', 'content': 'history'}]
+    history = db.get_messages_as_conversation(parent) or [
+        {'role': 'user', 'content': 'retained'}, {'role': 'assistant', 'content': 'history'}]
     assert db.try_acquire_compression_lock(parent, 'fixture')
     try:
         db.publish_compression_child(parent_session_id=parent, child_session_id=child,
