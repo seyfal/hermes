@@ -31,6 +31,8 @@ import {
 } from '@/store/transcript-tail'
 import type { SessionMessage, SessionMessagesResponse } from '@/types/hermes'
 
+import { retainUncoveredInterims, withoutRefreshedInterimParts } from './transcript-backfill-coverage'
+
 /**
  * Compaction projection can stamp the session's opening USER row
  * `display_kind: hidden` (#96875): the durable store holds the greeting but
@@ -222,7 +224,9 @@ function durableRowIds(messages: ChatMessage[]): Set<number> {
 }
 
 /** A text-only refresh can omit the live tool bubble after the turn settles. */
-function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+function retainLocalTurnParts(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  messages = retainUncoveredInterims(messages, previous)
+
   const previousFinalIndex = previous.findLastIndex(
     message => message.role === 'assistant' && message.rowId !== undefined && Boolean(chatMessageText(message).trim())
   )
@@ -324,7 +328,9 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   const byRowId = new Map<number, StoredRowSlot>()
   // A turn the page holds whole is the page's to draw, whatever stored ids
   // its live rows managed to bind (see transcript-receipt-turns).
-  const receiptDrop = dropReceiptTurnsThePageHolds(previous, refreshedTail)
+  // Covered interim parts go before the receipt drop: their closed user
+  // interval is read from the whole window.
+  const receiptDrop = dropReceiptTurnsThePageHolds(withoutRefreshedInterimParts(previous, refreshedTail), refreshedTail)
   // Local notices of a dropped turn, keyed by the page row they precede.
   const anchored = new Map<number, ChatMessage[]>()
 
@@ -433,7 +439,7 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
 
   if (anchor === 0) {
-    return retainCompletedTurnTools(refreshedTail, previous)
+    return retainLocalTurnParts(refreshedTail, previous)
   }
 
   if (prefixIsEarlier) {
@@ -452,7 +458,7 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
       .slice(0, anchor)
       .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
 
-    return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
+    return retainLocalTurnParts(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
@@ -461,10 +467,10 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   // tail really did cover. Take the page. This is what keeps a finished reply
   // through a long tool turn.
   if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
-    return retainCompletedTurnTools(refreshedTail, previous)
+    return retainLocalTurnParts(refreshedTail, previous)
   }
 
-  return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
+  return retainLocalTurnParts(mergeOverlappingTail(previous, refreshedTail), previous)
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4
