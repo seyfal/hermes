@@ -1,0 +1,103 @@
+name: Fork full test suite
+
+# Fork-only: the full Python suite (scripts/run_tests.sh, what upstream's tests.yml runs) and the
+# JS workspace checks (what upstream's js-tests.yml runs) on GitHub-hosted runners, because
+# upstream CI needs Blacksmith runners a fork does not have. Triggered by pushing a ci/** branch:
+# a build (or its plain upstream base) plus this one file, with the other workflows removed.
+
+on:
+  push:
+    branches: ['ci/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python tests (${{ matrix.slice }}/8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web", "keychain"]'
+          test-environment: 'true'
+          prune-python-cache: true
+
+      - name: Run tests
+        run: scripts/run_tests.sh 2>&1 | tee "$RUNNER_TEMP/tests.log"
+        shell: bash
+        env:
+          HERMES_TEST_SLICE: ${{ matrix.slice }}/8
+          HERMES_TEST_FORKSERVER: "1"
+          HERMES_TEST_WORKERS: 4
+          HERMES_TEST_FILE_TIMEOUT: 900
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+      - name: Keep the log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-${{ matrix.slice }}
+          path: ${{ runner.temp }}/tests.log
+
+  js:
+    name: JS workspace checks (Desktop included)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+
+      - name: Set up the locked JS build toolchain
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          extras: '[]'
+          test-environment: 'true'
+
+      - name: Install zsh and a virtual display for Electron
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Prepare locked Electron runtime
+        run: node scripts/build/electron-runtime.mjs --source .
+
+      - name: Run all workspace checks
+        run: node .github/scripts/run-workspace-checks.mjs 2>&1 | tee "$RUNNER_TEMP/js.log"
+        shell: bash
+
+      - name: Keep the log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: js
+          path: ${{ runner.temp }}/js.log
