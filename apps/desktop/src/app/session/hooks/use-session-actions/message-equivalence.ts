@@ -24,6 +24,8 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  // Durable identity of a fold: a refresh that only changes it must still land.
+  'foldedRowIds',
   'persistedTurn',
   'durableComplete',
   'recovered',
@@ -168,6 +170,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.rowId !== b.rowId ||
+    (a.foldedRowIds ?? []).join(',') !== (b.foldedRowIds ?? []).join(',') ||
     !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
     a.role !== b.role ||
     a.durableComplete !== b.durableComplete ||

@@ -346,6 +346,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   // backend rows, so the folded message has to report how many it covers
   // (see ChatMessage.serverRowSpan).
   let pendingToolRows = 0
+  // The stored ids of those rows: the fold's identity, not just its size.
+  let pendingToolRowIds: number[] = []
   let activeAssistantIndex: null | number = null
   // Todo history is stateful. Only a result from the nearest prior assistant
   // call in this turn may update it; a display-only orphan can still render.
@@ -383,12 +385,26 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     pendingToolParts = []
     pendingToolTimestamp = undefined
     pendingToolRows = 0
+    pendingToolRowIds = []
   }
 
   /** Attribute `rows` backend rows to a folded message (absent field means one). */
-  const absorbRows = (message: ChatMessage | undefined, rows: number) => {
+  const absorbRows = (message: ChatMessage | undefined, rows: number, rowIds: number[]) => {
     if (message && rows > 0) {
       message.serverRowSpan = (message.serverRowSpan ?? 1) + rows
+
+      if (rowIds.length) {
+        message.foldedRowIds = [...(message.foldedRowIds ?? []), ...rowIds]
+      }
+    }
+  }
+
+  const holdPendingRow = (message: SessionMessage) => {
+    const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+    pendingToolRows += 1
+
+    if (rowId !== undefined) {
+      pendingToolRowIds = [...pendingToolRowIds, rowId]
     }
   }
 
@@ -414,7 +430,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     active.parts = [...active.parts, ...parts]
     active.durableComplete = false
     active.timestamp = earliestTimestamp(active.timestamp, timestamp, ...parts.map(part => part.timestamp))
-    absorbRows(active, pendingToolRows)
+    absorbRows(active, pendingToolRows, pendingToolRowIds)
 
     return true
   }
@@ -430,6 +446,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         role: 'assistant',
         parts: pendingToolParts,
         durableComplete: false,
+        ...(pendingToolRowIds.length ? { foldedRowIds: pendingToolRowIds } : {}),
         ...(pendingToolRows > 1 ? { serverRowSpan: pendingToolRows } : {}),
         timestamp: pendingToolTimestamp
       })
@@ -469,7 +486,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       if (isTodoToolName(message.tool_name) && !pairedTodoResult(message)) {
         pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
         pendingToolTimestamp ??= message.timestamp
-        pendingToolRows += 1
+        holdPendingRow(message)
 
         return
       }
@@ -478,7 +495,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       if (updatedPendingToolParts) {
         pendingToolParts = updatedPendingToolParts
-        pendingToolRows += 1
+        holdPendingRow(message)
 
         return
       }
@@ -489,7 +506,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
       pendingToolTimestamp ??= message.timestamp
-      pendingToolRows += 1
+      holdPendingRow(message)
 
       return
     }
@@ -593,12 +610,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     if (isToolOnlyAssistant) {
       pendingToolParts = [...pendingToolParts, ...parts]
       pendingToolTimestamp ??= message.timestamp
-      pendingToolRows += 1
+      holdPendingRow(message)
 
       return
     }
 
     let pendingAbsorbedRows = 0
+    let pendingAbsorbedRowIds: number[] = []
 
     // A machine notice stored as an assistant row (the failed-turn boundary) is
     // Hermes speaking: it must not join the tool-call reply it follows.
@@ -607,6 +625,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         if (!appendPartsToActiveAssistant(pendingToolParts, message.timestamp ?? pendingToolTimestamp)) {
           parts.unshift(...pendingToolParts)
           pendingAbsorbedRows = pendingToolRows
+          pendingAbsorbedRowIds = pendingToolRowIds
         }
 
         clearPendingTools()
@@ -627,7 +646,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
           message.timestamp,
           ...parts.map(part => part.timestamp)
         )
-        absorbRows(activeAssistant, 1)
+        absorbRows(activeAssistant, 1, rowId === undefined ? [] : [rowId])
 
         return
       }
@@ -666,6 +685,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
+      ...(pendingAbsorbedRowIds.length ? { foldedRowIds: pendingAbsorbedRowIds } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})

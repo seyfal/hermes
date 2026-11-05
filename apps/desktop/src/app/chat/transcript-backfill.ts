@@ -116,9 +116,11 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
       existingRowIndices.set(message.rowId, index)
     }
 
-    for (const part of message.parts) {
-      if (part.sourceRowId !== undefined) {
-        existingPartRowIndices.set(part.sourceRowId, index)
+    // Every row the message stands for, folded rows included, so a fetched
+    // fold whose rows are all held finds its slot.
+    for (const rowId of transcriptRowIds(message)) {
+      if (rowId !== message.rowId) {
+        existingPartRowIndices.set(rowId, index)
       }
     }
 
