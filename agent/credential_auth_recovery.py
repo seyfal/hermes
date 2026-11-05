@@ -115,6 +115,11 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
         )
         return False, has_retried_429
     provider = agent.provider
+    if status_code == 401 and provider == "anthropic":
+        from agent.agent_runtime_helpers_auth import _recover_anthropic_401
+        entry = _entry_for(pool, credential_id, api_key_hint)
+        if entry is not None and entry.auth_type == "oauth":
+            return _recover_anthropic_401(agent, pool, entry, api_key_hint), has_retried_429
     # Only a 401 is the "valid key refused" shape worth backing off on; a non-entitlement 403
     # keeps the capped-refresh path and fails fast.
     nous = provider == "nous" and status_code == 401
