@@ -11,7 +11,9 @@ from tools import write_approval as wa
 
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
-    return f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    scope = wa.write_approval_origins(subsystem) if on else None
+    only = f" ({', '.join(sorted(scope))} writes only)" if scope else ""
+    return f"{subsystem}.write_approval = {'on' if on else 'off'}{only}"
 
 
 def _fmt_pending_list(subsystem: str) -> str:
