@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from agent.credential_pool import PooledCredential
 
 # Cooldowns before retrying an exhausted credential. Transient 401s cool down
 # briefly so single-key setups recover; 429/402/other take an hour.
@@ -54,3 +57,28 @@ def _exhausted_ttl(
     if sole_credential and not is_billing:
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     return base
+
+
+def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
+    """When an exhausted entry re-enters rotation; ``None`` when it is not benched (any more).
+
+    A usage-cap bench (``credential_pool_usage_caps``) ends early once the cap that set it is
+    raised or removed: the cap is the owner's setting, not the provider's verdict."""
+    from agent.credential_pool import STATUS_EXHAUSTED
+    from agent.credential_pool_timestamps import _parse_absolute_timestamp
+
+    if entry.last_status != STATUS_EXHAUSTED:
+        return None
+    reset_at = _parse_absolute_timestamp(entry.last_error_reset_at)
+    if reset_at is not None:
+        from agent.credential_pool_usage_caps import USAGE_CAP_REASON, usage_cap_bench_holds
+        if entry.last_error_reason == USAGE_CAP_REASON and not usage_cap_bench_holds(entry):
+            return None
+        return reset_at
+    if entry.last_status_at:
+        return entry.last_status_at + _exhausted_ttl(
+            entry.last_error_code,
+            sole_credential=sole_credential,
+            failure_reason=entry.failure_reason,
+        )
+    return None
