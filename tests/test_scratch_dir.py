@@ -32,6 +32,7 @@ def test_boot_hook_and_prompt_hand_the_prune_to_one_child(scratch_prune_spawns, 
     scratch = home / "cache" / "scratch"
     env = {"HERMES_HOME": str(home)}
     assert apply_scratch_tmp_env(env) is True
+    monkeypatch.setenv("TMPDIR", env["TMPDIR"])  # the boot hook applies it to os.environ
     hints = _local_host_hints()
     assert env["TMPDIR"] == str(scratch) and scratch.is_dir()
     assert f"Scratch directory: {scratch} (TMPDIR points here" in hints[0]
@@ -45,6 +46,28 @@ def test_boot_hook_and_prompt_hand_the_prune_to_one_child(scratch_prune_spawns, 
     finally:
         constants.reset_hermes_home_override(token)
     assert scratch_prune_spawns == [scratch, routed / "cache" / "scratch"]
+
+
+@pytest.mark.parametrize("tmpdir", ["/var/folders/xy/abc123/T/", None])
+def test_prompt_never_claims_tmpdir_points_at_scratch_when_it_does_not(scratch_prune_spawns, tmp_path,
+                                                                         monkeypatch, tmpdir):
+    """A TMPDIR the OS or user set (macOS launchd's ``/var/folders``) is kept by
+    apply_scratch_tmp_env, so ``$TMPDIR`` is not the scratch dir. The prompt must then say so
+    and name the absolute path instead of "TMPDIR points here" (``python3 $TMPDIR/x.py`` failed)."""
+    from agent.prompt_builder import _local_host_hints
+
+    home = tmp_path / "launch"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    scratch = home / "cache" / "scratch"
+    env = {"HERMES_HOME": str(home), "TMPDIR": tmpdir} if tmpdir else {"HERMES_HOME": str(home)}
+    if tmpdir:
+        assert apply_scratch_tmp_env(env) is False and env["TMPDIR"] == tmpdir
+        monkeypatch.setenv("TMPDIR", tmpdir)
+    else:
+        monkeypatch.delenv("TMPDIR", raising=False)
+    hints = _local_host_hints()[0]
+    assert "TMPDIR points here" not in hints
+    assert f"Scratch directory: {scratch} (TMPDIR does NOT point here, so do not use $TMPDIR" in hints
 
 
 def _idle_entry(scratch: Path, name: str) -> Path:

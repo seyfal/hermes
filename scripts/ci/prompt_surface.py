@@ -92,6 +92,12 @@ def _pin_environment() -> None:
     # The toolchain probe line reports the host's python/node/pip; it is environment, not code.
     from tools import env_probe
     env_probe.get_environment_probe_line = lambda **_k: ""  # type: ignore[assignment]
+    # The scratch-dir line says "TMPDIR points here" only when it does. A stock install's boot
+    # hook exports TMPDIR to the scratch dir; this child inherited the caller's temp dir instead.
+    for key in ("TMPDIR", "TMP", "TEMP"):
+        os.environ.pop(key, None)
+    import hermes_constants
+    hermes_constants.export_scratch_tmp_env()
 
 
 class _ImportFailures(logging.Handler):
