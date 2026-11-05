@@ -334,7 +334,7 @@ const parkClarify = (ctx: ServerRequestContext, clarifyRequest: ClarifyRequest) 
     })
 
     if (sessionId === deps.activeSessionIdRef.current) {
-      requestScrollToBottom(sessionId)
+      requestScrollToBottom(sessionId, { onlyIfFollowing: true })
     }
   }
 
