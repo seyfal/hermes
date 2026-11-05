@@ -3,6 +3,7 @@ import {
   type GatewayEvent,
   type GatewayEventName,
   JsonRpcGatewayClient,
+  JsonRpcGatewayError,
   type ServerRequest,
   type ServerRequestHandler
 } from '@hermes/shared'
@@ -108,6 +109,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
   private readonly reconciledEpochs = new Set<string>()
   // Frames of an ambiguous (session, epoch) parked until its owner probes settle.
   private readonly parkedFrames = new Map<string, Array<() => void>>()
+  private readonly continuedImports = new Set<string>()
   private connectionGeneration = 0
 
   override onRequest(handler: ServerRequestHandler): () => void {
@@ -193,6 +195,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.reconciledEpochs.clear()
     this.parkedFrames.clear()
     this.attached.clear()
+    this.continuedImports.clear()
     super.close()
   }
 
@@ -364,6 +367,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.displayProfiles.clear()
     this.reconciledEpochs.clear()
     this.parkedFrames.clear()
+    this.continuedImports.clear()
 
     const ready = this.readiness.begin(generation, this.nativeDial)
 
@@ -465,11 +469,14 @@ export class HermesGateway extends JsonRpcGatewayClient {
       try {
         result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
       } catch (error) {
-        if (!this.protocol.retryableFence(prepared, error)) { throw error }
-        // The refusal carried the owner's current fences: one retry at them, never a loop.
-        this.protocol.failure(prepared, error)
+        if (!await this.resumeImportedMount(method, prepared, error, generation, deadline, signal)) {
+          if (!this.protocol.retryableFence(prepared, error)) { throw error }
+          // The refusal carried the owner's current fences: one retry at them, never a loop.
+          this.protocol.failure(prepared, error)
+          prepared = this.protocol.prepare(method, params)
+        }
+
         this.requireConnectionGeneration(generation)
-        prepared = this.protocol.prepare(method, params)
         result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
       }
 
@@ -521,6 +528,27 @@ export class HermesGateway extends JsonRpcGatewayClient {
     const answer = typeof params.answer === 'string' ? params.answer : ''
 
     return this.request<T>('clarify.respond', { session_id: promptOwner.sessionId, profile: promptOwner.profile, request_id: params.request_id, answer }, timeoutMs, signal)
+  }
+
+  private async resumeImportedMount(method: string, params: Record<string, unknown>, error: unknown, generation: number, deadline: number, signal?: AbortSignal): Promise<boolean> {
+    const reason = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+    const key = canonicalSessionKey(params.session_id, params.profile)
+
+    if (method !== 'prompt.submit' || reason !== 'session_read_only' || this.continuedImports.has(key)) { return false }
+    this.requireConnectionGeneration(generation)
+    const target = { session_id: params.session_id, profile: params.profile }
+    const info = await this.request<{ source?: string }>('session.info', target, remainingRequestBudget(deadline, signal), signal)
+    this.requireConnectionGeneration(generation)
+
+    // Only the foreign importer's labels opt into continuation; other stored histories stay read-only.
+    if (info.source !== 'claude-code' && info.source !== 'codex-cli') { return false }
+
+    if (this.continuedImports.has(key)) { return false }
+    this.continuedImports.add(key)
+    // ID-based opens are read-only. The existing local-title door validates provenance and adopts in place.
+    await this.request('session.resume', { ...target, title: params.session_id, omit_messages: true }, remainingRequestBudget(deadline, signal), signal)
+
+    return true
   }
 
   private requireConnectionGeneration(generation: number): void {
