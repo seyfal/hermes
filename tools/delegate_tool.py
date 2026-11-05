@@ -254,9 +254,10 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    from tools.delegate_tool_skill_hints import build_skill_hints
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
+        max_spawn_depth=max_spawn, child_depth=child_depth, skill_hints=build_skill_hints(goal, context, delegation_cfg),
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
