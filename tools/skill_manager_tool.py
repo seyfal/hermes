@@ -792,8 +792,8 @@ def skill_manage(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
-    # Approval gate: skills are too large to review inline, so they always stage regardless
-    # of origin; bypassed when replaying an approved staged write.
+    # Approval gate: skills are too large to review inline, so they always stage (for every origin
+    # in skills.write_approval_origins); bypassed when replaying an approved staged write.
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
                 old_string=old_string, new_string=new_string, replace_all=replace_all,
                 absorbed_into=absorbed_into)
